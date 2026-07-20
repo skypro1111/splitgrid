@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Fast, platform-independent gates only — no electron-forge make (that needs
+# per-OS native builds and is run from release machines, not here).
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # --ignore-scripts skips node-pty's native build (binding.gyp): the gates
+      # below only need the TS sources + type defs, never the compiled addon, so
+      # we avoid pulling python/build-essential and a slow gyp compile.
+      - run: npm ci --ignore-scripts
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      # Lint has a pre-existing backlog (mostly no-explicit-any); surface it but
+      # don't fail the build yet. Flip to a hard gate once the backlog is cleared.
+      - name: Lint (non-blocking)
+        run: npm run lint
+        continue-on-error: true

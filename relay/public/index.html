@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>SplitGrid — live terminals</title>
+    <!-- MVP uses the jsDelivr CDN for xterm. Before production, vendor these into
+         /public (npm i @xterm/xterm @xterm/addon-fit) and serve them locally —
+         that removes the CDN-compromise risk the SRI warning is about. -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; height: 100vh; display: flex;
+        font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: #0b0d12; color: #d7dae0;
+      }
+      #sidebar {
+        width: 240px; flex: none; border-right: 1px solid #1d2230;
+        display: flex; flex-direction: column; background: #0e1118;
+      }
+      #sidebar header {
+        padding: 12px 14px; font-weight: 600; letter-spacing: .02em;
+        border-bottom: 1px solid #1d2230; display: flex; align-items: center; gap: 8px;
+      }
+      #status { width: 8px; height: 8px; border-radius: 50%; background: #f0b429; }
+      #status.live { background: #3ddc84; }
+      #status.down { background: #e5484d; }
+      #sessions { flex: 1; overflow: auto; }
+      .group-env {
+        padding: 10px 14px 4px; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+        text-transform: uppercase; color: #6b7280;
+      }
+      .group-ws {
+        padding: 3px 14px 3px 22px; font-size: 11px; color: #8b93a3;
+      }
+      .item {
+        padding: 7px 14px 7px 30px; cursor: pointer; border-bottom: 1px solid #141823;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .item:hover { background: #141a26; }
+      .item.active { background: #1b2333; color: #fff; }
+      .item .dim { color: #6b7280; font-size: 11px; }
+      #main { flex: 1; min-width: 0; position: relative; }
+      #term { position: absolute; inset: 8px; }
+      #empty {
+        position: absolute; inset: 0; display: flex; align-items: center;
+        justify-content: center; color: #6b7280; text-align: center; padding: 20px;
+      }
+
+      /* Top bar with the sidebar toggle + active session title. Shown at ALL
+         sizes — the sidebar is collapsible everywhere. */
+      #topbar {
+        display: flex; position: absolute; top: 0; left: 0; right: 0; z-index: 20;
+        height: 44px; align-items: center; gap: 10px; padding: 0 10px;
+        padding-top: env(safe-area-inset-top);
+        box-sizing: content-box; background: #0e1118; border-bottom: 1px solid #1d2230;
+      }
+      #menu-toggle {
+        display: flex; align-items: center; justify-content: center;
+        width: 34px; height: 34px; flex: none; border-radius: 7px;
+        background: transparent; border: 1px solid #1d2230; color: #d7dae0; cursor: pointer;
+      }
+      #menu-toggle:hover { background: #141a26; }
+      #menu-toggle:active { background: #1b2333; }
+      #topbar-title {
+        flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap; font-weight: 600;
+      }
+      #backdrop {
+        display: none; position: fixed; inset: 0; z-index: 40;
+        background: rgba(0,0,0,.5);
+      }
+      /* The terminal/empty area always sits below the top bar. */
+      #term { top: calc(52px + env(safe-area-inset-top)); }
+      #empty { top: calc(52px + env(safe-area-inset-top)); }
+
+      /* Desktop (≥769px): collapsing the sidebar removes it from flow so the
+         terminal reclaims the width. It's an in-flow column when open. */
+      @media (min-width: 769px) {
+        body:not(.sidebar-open) #sidebar { display: none; }
+      }
+
+      /* Mobile (≤768px): the sidebar is an off-canvas overlay with a backdrop. */
+      @media (max-width: 768px) {
+        #sidebar {
+          position: fixed; top: 0; bottom: 0; left: 0; z-index: 50;
+          width: min(82vw, 300px);
+          padding-top: env(safe-area-inset-top);
+          transform: translateX(-100%); transition: transform .22s ease;
+          box-shadow: 2px 0 18px rgba(0,0,0,.5);
+        }
+        body.sidebar-open #sidebar { transform: translateX(0); }
+        body.sidebar-open #backdrop { display: block; }
+        /* Bigger tap targets in the list on touch. */
+        .item { padding-top: 11px; padding-bottom: 11px; }
+        #userbar { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+      }
+      #userbar {
+        display: flex; align-items: center; gap: 9px; padding: 10px 14px;
+        border-top: 1px solid #1d2230;
+      }
+      #userbar .avatar {
+        width: 26px; height: 26px; border-radius: 50%; flex: none; object-fit: cover;
+        display: flex; align-items: center; justify-content: center;
+        background: #1b2333; color: #9fb4e8; font-weight: 600; font-size: 12px;
+      }
+      #userbar .who { flex: 1; min-width: 0; }
+      #userbar .who .email {
+        font-size: 11.5px; color: #d7dae0; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap;
+      }
+      #userbar a { color: #6b7280; text-decoration: none; font-size: 11px; }
+      #userbar a:hover { color: #d7dae0; }
+    </style>
+  </head>
+  <body>
+    <aside id="sidebar">
+      <header><span id="status"></span> SplitGrid live</header>
+      <div id="sessions"></div>
+      <div id="userbar">
+        <span class="avatar" id="avatar"></span>
+        <span class="who"><div class="email" id="email"></div></span>
+        <a href="/logout">Sign out</a>
+      </div>
+    </aside>
+    <div id="backdrop"></div>
+    <main id="main">
+      <div id="topbar">
+        <button id="menu-toggle" aria-label="Toggle sessions">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M3 6h18M3 12h18M3 18h18" />
+          </svg>
+        </button>
+        <span id="topbar-title">SplitGrid</span>
+      </div>
+      <div id="term"></div>
+      <div id="empty">No live terminals.<br />Open the SplitGrid app and start sharing.</div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+    <script>
+      const { Terminal } = window;
+      const FitAddon = window.FitAddon.FitAddon;
+
+      const $sessions = document.getElementById('sessions');
+      const $term = document.getElementById('term');
+      const $empty = document.getElementById('empty');
+      const $status = document.getElementById('status');
+      const $menuToggle = document.getElementById('menu-toggle');
+      const $backdrop = document.getElementById('backdrop');
+      const $topbarTitle = document.getElementById('topbar-title');
+
+      const isMobile = () => window.matchMedia('(max-width: 768px)').matches;
+      function setSidebar(open) {
+        document.body.classList.toggle('sidebar-open', open);
+        // On desktop, collapsing/expanding changes the terminal pane width →
+        // re-fit. (On mobile it's an overlay, but refit is harmless.)
+        refit();
+      }
+      $menuToggle.addEventListener('click', () => setSidebar(!document.body.classList.contains('sidebar-open')));
+      $backdrop.addEventListener('click', () => setSidebar(false));
+
+      // One xterm instance per session id, so switching tabs preserves scrollback.
+      const terms = new Map(); // id -> { term, fit, meta }
+      let activeId = null;
+      let ws = null; // hoisted so term.onData can push keystrokes upstream
+
+      // Reconnect with exponential backoff (reset on a successful open).
+      const BACKOFF_BASE_MS = 1000;
+      const BACKOFF_MAX_MS = 15000;
+      let backoff = BACKOFF_BASE_MS;
+      let reconnectTimer = null;
+
+      function sendInput(id, data) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ t: 'input', id, data }));
+        }
+      }
+
+      function setStatus(state) { $status.className = state; }
+
+      // Show the signed-in user (injected server-side as window.__SG_USER__).
+      (function showUser() {
+        const u = window.__SG_USER__;
+        if (!u) return;
+        const name = [u.firstName, u.lastName].filter(Boolean).join(' ').trim();
+        document.getElementById('email').textContent = u.email || name || '';
+        const avatar = document.getElementById('avatar');
+        if (u.profilePictureUrl) {
+          const img = document.createElement('img');
+          img.className = 'avatar'; img.src = u.profilePictureUrl; img.alt = '';
+          img.referrerPolicy = 'no-referrer';
+          avatar.replaceWith(img);
+        } else {
+          avatar.textContent = (name || u.email || '?').charAt(0).toUpperCase();
+        }
+      })();
+
+      function ensureTerm(meta) {
+        let entry = terms.get(meta.id);
+        if (!entry) {
+          const term = new Terminal({
+            convertEol: false, scrollback: 5000, fontSize: 13,
+            theme: { background: '#0b0d12' },
+            cursorBlink: true,
+          });
+          // Size to the PRODUCER's grid (not the container): a TUI positions by
+          // absolute rows/cols, so the mirror must match exactly or it renders
+          // into the wrong cells. We scale the whole grid to fit the pane below.
+          term.resize(meta.cols || 80, meta.rows || 24);
+          // Keystrokes go back to the desktop PTY (the producer gates them to
+          // terminals it is actively streaming).
+          term.onData((data) => sendInput(meta.id, data));
+          // Each terminal gets its OWN persistent container. Switching sessions
+          // just shows/hides these — we never re-open() a terminal (xterm can't
+          // re-attach after its DOM is torn down, which is what blanked the
+          // render on tab switch). open() happens once, lazily, on first show.
+          const el = document.createElement('div');
+          el.style.position = 'absolute';
+          el.style.inset = '0';
+          el.style.overflow = 'hidden';
+          el.style.display = 'none';
+          $term.appendChild(el);
+          entry = { term, meta, el, opened: false };
+          terms.set(meta.id, entry);
+        } else {
+          entry.meta = meta;
+          entry.term.resize(meta.cols || 80, meta.rows || 24);
+        }
+        renderList();
+        if (!activeId) select(meta.id);
+        else if (activeId === meta.id) applyGeometry(entry);
+        return entry;
+      }
+
+      // Fit the producer's cols×rows grid into the pane.
+      //  • Desktop: scale the WHOLE grid down to fit (mirror) via transform —
+      //    everything visible, no scroll.
+      //  • Mobile: fit to HEIGHT (readable rows) and let the pane scroll
+      //    horizontally for width. transform:scale() can't scroll (it doesn't
+      //    change layout size), so we use `zoom`, which does — and set the
+      //    container overflow:auto.
+      function applyGeometry(entry) {
+        entry.term.resize(entry.meta.cols || 80, entry.meta.rows || 24);
+        const el = entry.term.element;
+        if (!el) return;
+        el.style.transformOrigin = 'top left';
+        // Reset both transforms before measuring the natural grid size.
+        el.style.transform = 'none';
+        el.style.zoom = '1';
+        const r = el.getBoundingClientRect();
+        const cont = $term.getBoundingClientRect();
+        if (!r.width || !r.height) return;
+
+        if (isMobile()) {
+          // Never upscale past 1; scroll horizontally when wider than the screen.
+          el.style.zoom = String(Math.min(cont.height / r.height, 1));
+          entry.el.style.overflow = 'auto';
+          entry.el.style.webkitOverflowScrolling = 'touch';
+          entry.el.style.overscrollBehavior = 'contain';
+        } else {
+          const scale = Math.min(cont.width / r.width, cont.height / r.height);
+          el.style.transform = `scale(${scale})`;
+          entry.el.style.overflow = 'hidden';
+        }
+      }
+
+      function select(id) {
+        const entry = terms.get(id);
+        if (!entry) return;
+        activeId = id;
+        $empty.style.display = 'none';
+        // Show this terminal's container, hide the rest. open() runs once.
+        for (const e of terms.values()) e.el.style.display = e === entry ? 'block' : 'none';
+        if (!entry.opened) { entry.term.open(entry.el); entry.opened = true; }
+        $topbarTitle.textContent = entry.meta.title || 'terminal';
+        // On a phone, picking a session closes the overlay so the terminal fills
+        // the screen.
+        if (isMobile()) setSidebar(false);
+        applyGeometry(entry);
+        entry.term.scrollToBottom();
+        renderList();
+      }
+
+      function renderList() {
+        $sessions.innerHTML = '';
+        if (terms.size === 0) {
+          $empty.style.display = 'flex'; activeId = null;
+          $topbarTitle.textContent = 'SplitGrid';
+          return;
+        }
+        $empty.style.display = 'none';
+        // Keep the mobile top bar's title in sync with the active session.
+        const act = activeId && terms.get(activeId);
+        if (act) $topbarTitle.textContent = act.meta.title || 'terminal';
+
+        // Group: environment → workspace → terminal.
+        const envs = new Map(); // envName -> Map(wsName -> [{id, meta}])
+        for (const [id, { meta }] of terms) {
+          const env = meta.envName || 'Environment';
+          const wsName = meta.workspaceName || 'Workspace';
+          if (!envs.has(env)) envs.set(env, new Map());
+          const wsMap = envs.get(env);
+          if (!wsMap.has(wsName)) wsMap.set(wsName, []);
+          wsMap.get(wsName).push({ id, meta });
+        }
+
+        const text = (s) => { const el = document.createElement('div'); el.textContent = s; return el; };
+        for (const [env, wsMap] of envs) {
+          const envEl = text(env); envEl.className = 'group-env'; $sessions.appendChild(envEl);
+          for (const [wsName, items] of wsMap) {
+            const wsEl = text(wsName); wsEl.className = 'group-ws'; $sessions.appendChild(wsEl);
+            for (const { id, meta } of items) {
+              const el = document.createElement('div');
+              el.className = 'item' + (id === activeId ? ' active' : '');
+              const title = document.createElement('span');
+              title.textContent = (meta.title || 'terminal') + ' ';
+              const dim = document.createElement('span');
+              dim.className = 'dim'; dim.textContent = meta.cols + '×' + meta.rows;
+              el.append(title, dim);
+              el.onclick = () => select(id);
+              $sessions.appendChild(el);
+            }
+          }
+        }
+      }
+
+      function dropTerm(id) {
+        const entry = terms.get(id);
+        if (entry) { entry.term.dispose(); entry.el.remove(); }
+        terms.delete(id);
+        if (activeId === id) activeId = null;
+        renderList();
+        if (terms.size > 0 && !activeId) select(terms.keys().next().value);
+      }
+
+      function connect() {
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        ws = new WebSocket(`${proto}://${location.host}/ws/viewer`);
+
+        ws.onopen = () => { setStatus('live'); backoff = BACKOFF_BASE_MS; };
+        ws.onclose = (ev) => {
+          setStatus('down');
+          // 4401 = no/invalid session → go authenticate.
+          if (ev.code === 4401) { location.href = '/login'; return; }
+          // Transient drop → reconnect with exponential backoff (capped). On
+          // reopen the relay replays the real current screen, so no state is lost.
+          if (reconnectTimer) return;
+          const delay = backoff;
+          backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
+          reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
+        };
+        ws.onmessage = (ev) => {
+          const msg = JSON.parse(ev.data);
+          switch (msg.t) {
+            case 'sessions': {
+              // The relay's full truth on (re)connect — reconcile against it so a
+              // reconnect/refresh drops terminals that no longer exist.
+              const live = new Set(msg.sessions.map((m) => m.id));
+              for (const id of [...terms.keys()]) if (!live.has(id)) dropTerm(id);
+              for (const meta of msg.sessions) ensureTerm(meta);
+              break;
+            }
+            case 'open':
+              ensureTerm(msg.session);
+              break;
+            case 'snapshot': {
+              const e = terms.get(msg.id);
+              if (e) { e.term.reset(); e.term.write(msg.buffer); if (e === terms.get(activeId)) applyGeometry(e); }
+              break;
+            }
+            case 'data': {
+              const e = terms.get(msg.id);
+              if (e) e.term.write(msg.chunk);
+              break;
+            }
+            case 'resize': {
+              const e = terms.get(msg.id);
+              if (e) {
+                e.meta.cols = msg.cols; e.meta.rows = msg.rows;
+                if (msg.id === activeId) applyGeometry(e); else e.term.resize(msg.cols, msg.rows);
+                renderList();
+              }
+              break;
+            }
+            case 'close':
+              dropTerm(msg.id);
+              break;
+          }
+        };
+      }
+
+      // Re-fit the active terminal to the pane on any size change — window
+      // resize, sidebar toggle, and (mobile) orientation flips. A double rAF lets
+      // layout settle (orientation change resizes async) before we measure.
+      function refit() {
+        const e = activeId && terms.get(activeId);
+        if (e) requestAnimationFrame(() => requestAnimationFrame(() => applyGeometry(e)));
+      }
+      window.addEventListener('resize', refit);
+      window.addEventListener('orientationchange', refit);
+
+      // Initial sidebar state: open on desktop (in-flow column), closed on a
+      // phone (overlay). Done here, after terms/activeId exist (refit reads them).
+      setSidebar(!isMobile());
+
+      connect();
+    </script>
+  </body>
+</html>

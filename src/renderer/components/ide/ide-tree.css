@@ -1,0 +1,116 @@
+/* Override react-complex-tree modern theme for dark VS Code look */
+.ide-file-explorer .rct-tree-root {
+  padding: 0;
+}
+
+.ide-file-explorer [data-rct-tree] {
+  font-size: var(--container-font-size, 13px);
+  font-family: inherit;
+  --rct-item-height: calc(var(--container-font-size, 13px) * 1.7);
+}
+
+.ide-file-explorer .rct-tree-item-li {
+  list-style: none;
+  font-size: var(--container-font-size, 13px);
+}
+
+.ide-file-explorer .rct-tree-item-title-container {
+  display: flex;
+  align-items: center;
+  padding: 1px 8px 1px 0;
+  cursor: pointer;
+  border-radius: 0;
+  min-height: 22px;
+  line-height: 1.6;
+}
+
+.ide-file-explorer .rct-tree-item-title-container:hover {
+  background: var(--bg-hover);
+}
+
+.ide-file-explorer .rct-tree-item-title-container-selected .rct-tree-item-button {
+  background: var(--bg-hover) !important;
+}
+
+.ide-file-explorer .rct-tree-item-title-container-focused .rct-tree-item-button {
+  outline: none;
+  background: var(--bg-hover);
+}
+
+.ide-file-explorer .rct-tree-item-title-container-selected.rct-tree-item-title-container-focused .rct-tree-item-button {
+  background: var(--bg-hover) !important;
+}
+
+.ide-file-explorer .rct-tree-item-button:focus-visible {
+  outline: none;
+}
+
+.ide-file-explorer .rct-tree-item-arrow {
+  width: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.ide-file-explorer .rct-tree-item-arrow svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Drag indicator */
+.ide-file-explorer .rct-tree-drag-between-line {
+  height: 2px;
+  background: var(--accent);
+}
+
+/* Search box (hidden since canSearch=false) */
+.ide-file-explorer .rct-tree-search-input-container {
+  display: none;
+}
+
+/* Scrollbar */
+.ide-file-explorer::-webkit-scrollbar {
+  width: 8px;
+}
+
+.ide-file-explorer::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ide-file-explorer::-webkit-scrollbar-thumb {
+  background: rgba(103, 103, 103, 0.31);
+  border-radius: 4px;
+}
+
+.ide-file-explorer::-webkit-scrollbar-thumb:hover {
+  background: #676767;
+}
+
+/* Status bar color */
+:root {
+  --bg-statusbar: #141414;
+}
+
+/* One-shot highlight on a file/folder name the instant it's synced to a remote.
+   The name briefly washes green (matching the persistent synced text colour) and
+   settles. Duration is kept in sync with SYNC_FLASH_MS in IDEFileExplorer.tsx;
+   the title node is re-keyed on each sync so the animation restarts cleanly. */
+@keyframes ide-sync-flash {
+  0%   { background-color: rgba(142, 214, 168, 0); }
+  18%  { background-color: rgba(142, 214, 168, 0.34); }
+  100% { background-color: rgba(142, 214, 168, 0); }
+}
+
+.ide-file-explorer .ide-sync-flash {
+  border-radius: 3px;
+  animation: ide-sync-flash 1000ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ide-file-explorer .ide-sync-flash {
+    animation: none;
+  }
+}

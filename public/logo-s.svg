@@ -1,0 +1,39 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Маска: білий колір залишає видимим, чорний — робить прозорим (вирізає) -->
+    <mask id="arrow-cutout">
+      <rect x="0" y="0" width="512" height="512" fill="white" />
+      <text
+        x="256"
+        y="212.875"
+        font-family="Arial, sans-serif"
+        font-size="445"
+        font-weight="900"
+        fill="black"
+        text-anchor="middle"
+        dominant-baseline="middle"
+      >&lt;</text>
+      <text
+        x="256"
+        y="382.875"
+        font-family="Arial, sans-serif"
+        font-size="445"
+        font-weight="900"
+        fill="black"
+        text-anchor="middle"
+        dominant-baseline="middle"
+      >&gt;</text>
+    </mask>
+  </defs>
+
+  <!-- Внутрішній білий квадрат із прорізаною наскрізь стрілкою -->
+  <rect
+    x="0"
+    y="0"
+    width="512"
+    height="512"
+
+    fill="black"
+    mask="url(#arrow-cutout)"
+  />
+</svg>

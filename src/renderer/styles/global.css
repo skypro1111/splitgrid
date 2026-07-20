@@ -1,0 +1,1986 @@
+/* Dark editor-style theme */
+:root {
+  --bg-primary: #141414;
+  --bg-sidebar: #141414;
+  --bg-surface: #1a1a1a;
+  --bg-hover: #262626;
+  --bg-active: #163761;
+  --bg-input: #1e1e1e;
+  --bg-titlebar: #141414;
+  --bg-editor: #181818;
+  --bg-line-highlight: #262626;
+  --text-primary: #D4D4D4;
+  --text-secondary: #D4D4D4;
+  --text-muted: #7a797a;
+  --accent: #228df2;
+  --accent-light: #359dff;
+  --accent-green: #15ac91;
+  --accent-red: #f14c4c;
+  --accent-yellow: #e5b95c;
+  --accent-orange: #ea7620;
+  --accent-blue: #4c9df3;
+  --accent-purple: #5b51ec;
+  --border: #383838;
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-active: #228df2;
+  --list-hover: #2a282a;
+  --list-active: #163761;
+  --list-inactive: #3c3b3c;
+  --scrollbar: rgba(103, 103, 103, 0.31);
+  --scrollbar-hover: #676767;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+  --font-sans: 'SF Pro Text', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+  text-rendering: auto;
+}
+
+/* VS Code scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 0;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.xterm-terminal-host {
+  --vscode-scrollbar-shadow: transparent;
+}
+
+.xterm-terminal-host .xterm,
+.xterm-terminal-host .xterm-scrollable-element {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+}
+
+.xterm-terminal-host .xterm-viewport {
+  background-color: transparent !important;
+}
+
+.xterm-terminal-host .xterm-screen {
+  outline: none;
+}
+
+.xterm-terminal-host .xterm-scrollable-element > .scrollbar > .slider {
+  border-radius: 0;
+}
+
+::selection {
+  background: rgba(255, 255, 255, 0.15);
+  color: var(--text-primary);
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+input, select {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 4px 8px;
+  outline: none;
+}
+
+input:focus, select:focus {
+  border-color: var(--border);
+  outline: none;
+}
+
+input::placeholder {
+  color: var(--text-muted);
+}
+
+/* react-complex-tree — override CSS custom properties */
+:root {
+  --rct-color-tree-bg: transparent;
+  --rct-color-tree-focus-outline: transparent;
+  --rct-color-focustree-item-selected-bg: var(--bg-hover);
+  --rct-color-focustree-item-selected-text: var(--text-primary);
+  --rct-color-nonfocustree-item-selected-bg: var(--list-inactive);
+  --rct-color-nonfocustree-item-selected-text: var(--text-primary);
+  --rct-color-focustree-item-focused-border: transparent;
+  --rct-color-focustree-item-draggingover-bg: var(--bg-hover);
+  --rct-color-focustree-item-draggingover-color: var(--text-primary);
+  --rct-color-focustree-item-hover-bg: var(--bg-hover);
+  --rct-color-nonfocustree-item-hover-bg: var(--bg-hover);
+  --rct-color-focustree-item-active-bg: var(--bg-hover);
+  --rct-color-nonfocustree-item-active-bg: var(--bg-hover);
+  --rct-color-nonfocustree-item-focused-border: transparent;
+  --rct-item-height: 22px;
+  --rct-color-arrow: var(--text-muted);
+  --rct-arrow-size: 10px;
+  --rct-arrow-container-size: 18px;
+  --rct-color-renaming-input-submitbutton-bg: var(--bg-hover);
+  --rct-bar-color: transparent;
+  --rct-focus-outline: transparent;
+  --rct-bar-width: 0px;
+  --rct-radius: 0px;
+  --rct-item-margin: 0px;
+  --rct-item-padding: 4px;
+  --rct-cursor: default;
+}
+
+/* react-complex-tree — VS Code file explorer */
+.rct-tree-root {
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 13px !important;
+  padding: 0 !important;
+}
+
+.rct-tree-item-li {
+  background: transparent !important;
+}
+
+/* Base item */
+.rct-tree-item-title-container {
+  color: var(--text-secondary) !important;
+  padding: 0 8px 0 0 !important;
+  border-radius: 0 !important;
+  min-height: 22px !important;
+  line-height: 22px !important;
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* Hover — target button (modern theme uses .rct-tree-item-button, not title-container) */
+.rct-tree-item-button:hover {
+  background-color: var(--bg-hover) !important;
+}
+
+/* Selected */
+.rct-tree-item-title-container-selected .rct-tree-item-button,
+.rct-tree-item-title-container-selected .rct-tree-item-button:hover {
+  background-color: var(--bg-hover) !important;
+  color: var(--text-primary) !important;
+}
+
+/* Focused item — no visible border, VS Code style */
+.rct-tree-item-title-container-focused {
+  border-color: transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* Remove focus outline on button (modern theme adds 2px solid outline) */
+.rct-tree-item-button:focus-visible {
+  outline: none !important;
+}
+
+/* Remove the blue selection bar from modern theme */
+.rct-tree-item-title-container-selected .rct-tree-item-button::before {
+  display: none !important;
+}
+
+/* Tree root outline when focused */
+.rct-tree-root:focus-visible {
+  outline: none !important;
+}
+
+/* Selected + focused */
+.rct-tree-item-title-container-selected.rct-tree-item-title-container-focused {
+  border-color: transparent !important;
+}
+.rct-tree-item-title-container-selected.rct-tree-item-title-container-focused .rct-tree-item-button {
+  background-color: var(--bg-hover) !important;
+}
+
+/* Arrow */
+.rct-tree-item-arrow {
+  width: 18px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex-shrink: 0 !important;
+}
+
+.rct-tree-item-arrow svg {
+  fill: var(--text-muted) !important;
+  width: 16px !important;
+  height: 16px !important;
+}
+
+/* Drag over target in tree */
+.rct-tree-item-title-container-dragging-over {
+  background: var(--bg-hover) !important;
+  outline: none !important;
+}
+
+/* Indent guides */
+.rct-tree-item-li .rct-tree-item-li {
+  border-left: 1px solid rgba(133, 133, 133, 0.1) !important;
+  margin-left: 8px !important;
+  padding-left: 8px !important;
+}
+
+/* --- Tab Bar --- */
+.tab-bar {
+  display: flex;
+  height: 35px;
+  min-height: 35px;
+  background: var(--bg-titlebar);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.tab-bar::-webkit-scrollbar {
+  height: 0;
+  display: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  min-width: 0;
+  max-width: 200px;
+  height: 100%;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  border-right: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.tab:hover {
+  color: var(--text-primary);
+}
+
+.tab-active {
+  background: var(--bg-editor);
+  color: var(--text-primary);
+}
+
+.tab-active::before {
+  display: none;
+}
+
+.tab-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-preview {
+  font-style: italic;
+}
+
+.tab-dirty {
+  color: var(--text-primary);
+  font-size: 10px;
+  flex-shrink: 0;
+  margin-left: -2px;
+}
+
+.tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  font-size: 14px;
+  color: var(--text-muted);
+  opacity: 0;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.tab:hover .tab-close,
+.tab-active .tab-close {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+/* --- Context Menu --- */
+.context-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 180px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 0;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 24px 4px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  min-height: 26px;
+}
+
+.context-menu-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.context-menu-item.disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.context-menu-item.disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.context-menu-shortcut {
+  margin-left: 24px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.context-menu-item:hover .context-menu-shortcut {
+  color: var(--text-secondary);
+}
+
+.context-menu-separator {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+/* --- Confirm Dialog --- */
+.confirm-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.confirm-dialog {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 20px 24px;
+  min-width: 320px;
+  max-width: 440px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.confirm-dialog h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--text-primary);
+}
+
+.confirm-dialog p {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+  word-break: break-all;
+}
+
+.confirm-dialog-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm-dialog-buttons button {
+  padding: 4px 14px;
+  border-radius: 3px;
+  font-size: 12px;
+  height: 28px;
+}
+
+.confirm-dialog-btn-cancel {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.confirm-dialog-btn-cancel:hover {
+  background: var(--bg-hover);
+}
+
+.confirm-dialog-btn-danger {
+  background: var(--accent-red);
+  color: var(--text-primary);
+  border: none;
+}
+
+.confirm-dialog-btn-danger:hover {
+  background: #c93030;
+}
+
+/* SQL Tree nodes */
+.sql-tree-node {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: var(--sql-font-size, 12px);
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  gap: 4px;
+  transition: background 80ms ease;
+}
+
+.sql-tree-node:hover {
+  background: var(--list-hover);
+}
+
+.sql-tree-node.selected {
+  background: var(--list-active);
+  color: var(--text-primary);
+}
+
+/* The node(s) backing the result currently shown on screen: connection →
+ * database → schema → table. A left accent bar + subtle tint, layered under
+ * .selected (which can co-occur). */
+.sql-tree-node.active-path {
+  background: rgba(34, 141, 242, 0.13);
+  color: var(--text-primary);
+}
+.sql-tree-node.active-path .tree-label { font-weight: 600; }
+.sql-tree-node.active-path.selected {
+  background: var(--list-active);
+}
+
+.sql-tree-node .tree-meta {
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--text-muted);
+  font-size: 0.85em;
+  flex-shrink: 0;
+}
+
+.sql-tree-node .tree-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.sql-tree-node .tree-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.67em;
+  /* 2em of the 0.67em font ≈ 1.33em of the node font (~16px at base). */
+  width: 2em;
+  height: 2em;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* Inline per-row refresh button: hidden until the row (or itself) is hovered,
+ * so it doesn't clutter the tree. Sits at the far right after any meta. */
+.sql-tree-node .tree-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5em;
+  height: 1.5em;
+  margin-left: 4px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 80ms ease, background 80ms ease, color 80ms ease;
+}
+.sql-tree-node:hover .tree-refresh { opacity: 0.65; }
+.sql-tree-node .tree-refresh:hover {
+  opacity: 1;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sql-tree-node .tree-arrow-spacer {
+  display: inline-block;
+  width: 1.33em;
+  flex-shrink: 0;
+}
+
+/* ============ SQL Tab Bar ============ */
+.sql-tab-bar {
+  display: flex;
+  align-items: stretch;
+  height: 30px;
+  min-height: 30px;
+  background: var(--bg-titlebar);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+.sql-tab-bar .tab-strip {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.sql-tab-bar .tab-strip::-webkit-scrollbar { display: none; }
+
+.sql-tab-bar .tab {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 4px 0 10px;
+  font-size: calc(var(--sql-font-size, 12px) * 0.9);
+  color: var(--text-muted);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 180px;
+  border-right: 1px solid var(--border);
+  transition: background 80ms ease;
+  position: relative;
+}
+
+.sql-tab-bar .tab:hover { background: var(--bg-hover); }
+
+.sql-tab-bar .tab.active {
+  color: var(--text-primary);
+  background: var(--bg-editor);
+  margin-bottom: -1px;
+  padding-bottom: 1px;
+  z-index: 1;
+}
+
+.sql-tab-bar .tab .tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sql-tab-bar .tab .tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: calc(var(--sql-font-size, 12px) * 1);
+  cursor: pointer;
+  opacity: 0;
+  flex-shrink: 0;
+  transition: opacity 80ms, background 80ms;
+}
+
+.sql-tab-bar .tab:hover .tab-close,
+.sql-tab-bar .tab.active .tab-close { opacity: 1; }
+.sql-tab-bar .tab .tab-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.sql-tab-bar .tab-new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: calc(var(--sql-font-size, 12px) * 1.35);
+  cursor: pointer;
+}
+
+.sql-tab-bar .tab-new:hover { color: var(--text-primary); background: var(--bg-hover); }
+
+/* ============ SQL DataGrid ============ */
+.sql-datagrid {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  font-size: var(--sql-font-size, 12px);
+  color: var(--text-secondary);
+}
+
+.sql-datagrid .grid-viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.sql-datagrid table {
+  border-collapse: collapse;
+  min-width: 100%;
+}
+
+.sql-datagrid thead { position: sticky; top: 0; z-index: 2; }
+
+.sql-datagrid th {
+  background: var(--bg-titlebar);
+  color: var(--text-primary);
+  font-weight: 600;
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+}
+
+.sql-datagrid th:hover { background: var(--bg-hover); }
+
+.sql-datagrid th .sort-indicator {
+  margin-left: 4px;
+  font-size: calc(var(--sql-font-size, 12px) * 0.75);
+  color: var(--accent);
+}
+
+.sql-datagrid th .resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  z-index: 3;
+}
+
+.sql-datagrid th .resize-handle:hover,
+.sql-datagrid th .resize-handle.resizing {
+  background: var(--accent);
+}
+
+.sql-datagrid .row-num-col {
+  width: 52px;
+  min-width: 52px;
+  max-width: 52px;
+  text-align: right;
+  cursor: default;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-titlebar);
+}
+
+.sql-datagrid td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 400px;
+}
+
+.sql-datagrid tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.sql-datagrid tbody tr:hover td {
+  background: var(--list-hover);
+}
+
+.sql-datagrid td.row-num {
+  text-align: right;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-titlebar);
+  border-right: 1px solid var(--border);
+  cursor: default;
+}
+
+.sql-datagrid tbody tr:hover td.row-num {
+  background: var(--bg-hover);
+}
+
+.sql-datagrid .null-val {
+  color: var(--text-muted);
+  font-style: italic;
+  opacity: 0.6;
+}
+
+.sql-datagrid .grid-pagination {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-titlebar);
+  font-size: calc(var(--sql-font-size, 12px) * 0.92);
+  color: var(--text-muted);
+  flex-shrink: 0;
+  min-height: 30px;
+}
+
+.sql-datagrid .grid-pagination button {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 2px 8px;
+  font-size: calc(var(--sql-font-size, 12px) * 0.92);
+  cursor: pointer;
+}
+
+.sql-datagrid .grid-pagination button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sql-datagrid .grid-pagination button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.sql-datagrid .grid-pagination select {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  padding: 2px 4px;
+  font-size: calc(var(--sql-font-size, 12px) * 0.92);
+}
+
+.sql-datagrid .grid-status {
+  padding: 4px 10px;
+  font-size: calc(var(--sql-font-size, 12px) * 0.92);
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  background: var(--bg-titlebar);
+  flex-shrink: 0;
+  min-height: 24px;
+}
+
+.sql-datagrid .grid-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--text-muted);
+  font-size: var(--sql-font-size, 12px);
+}
+
+/* ============ SQL DataGrid v2 (virtualized + editable) ============ */
+.sql-datagrid.dg {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  font-size: var(--sql-font-size, 12px);
+  color: var(--text-secondary);
+  outline: none;
+}
+
+/* Edit toolbar */
+.dg-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-titlebar);
+  flex-shrink: 0;
+  min-height: 30px;
+}
+.dg-tool-spacer { flex: 1; }
+.dg-tool-btn {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 2px 10px;
+  font-size: calc(var(--sql-font-size, 12px) * 0.92);
+  cursor: pointer;
+}
+.dg-tool-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.dg-tool-btn:disabled { opacity: 0.4; cursor: default; }
+.dg-tool-btn.active {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+/* Column visibility menu */
+.dg-colmenu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 2500;
+  margin-top: 3px;
+  min-width: 220px;
+  max-width: 320px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.dg-colmenu-search {
+  position: sticky;
+  top: 0;
+  padding: 6px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.dg-colmenu-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 4px 7px;
+  outline: none;
+}
+.dg-colmenu-input:focus { border-color: var(--accent); }
+.dg-colmenu-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 11px;
+}
+.dg-colmenu-actions button {
+  background: transparent;
+  border: none;
+  color: var(--accent-green);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+.dg-colmenu-actions button:hover { text-decoration: underline; }
+.dg-colmenu-count { margin-left: auto; color: var(--text-muted); }
+.dg-colmenu-list {
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.dg-colmenu-opt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.dg-colmenu-opt:hover { background: var(--bg-hover); }
+.dg-colmenu-opt input[disabled] { cursor: default; }
+.dg-colmenu-opt-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Filter row (sticky under the header, server-side table-tab filtering) */
+.dg-header-stack { position: sticky; top: 0; z-index: 3; }
+.dg-filter-row {
+  display: flex;
+  background: #181818;
+  border-bottom: 1px solid var(--border);
+}
+.dg-filter-cell {
+  box-sizing: border-box;
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  height: 26px;
+}
+.dg-filter-rownum {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: #181818;
+  border-right: 1px solid var(--border);
+  justify-content: center;
+  padding: 0;
+}
+.dg-filter-clear {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.dg-filter-clear:hover:not(:disabled) { color: var(--text-primary); }
+.dg-filter-clear:disabled { opacity: 0.3; cursor: default; }
+.dg-filter-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 2px 2px;
+  outline: none;
+}
+.dg-filter-input::placeholder { color: var(--text-muted); opacity: 0.7; }
+.dg-filter-input:focus { border-bottom-color: var(--accent); }
+.dg-tool-btn.dg-submit:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.dg-pending {
+  font-size: calc(var(--sql-font-size, 12px) * 0.88);
+  color: var(--accent-yellow);
+}
+.dg-tool-error {
+  font-size: calc(var(--sql-font-size, 12px) * 0.85);
+  color: var(--accent-red);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dg-ro-hint {
+  padding: 3px 10px;
+  font-size: calc(var(--sql-font-size, 12px) * 0.82);
+  color: var(--text-muted);
+  background: var(--bg-titlebar);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+/* Viewport + virtual rows */
+.dg-viewport { flex: 1; min-height: 0; overflow: auto; }
+.dg-overlay {
+  position: absolute; inset: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(20, 20, 20, 0.5);
+  color: var(--text-muted); font-size: 12px;
+}
+
+.dg-header {
+  position: sticky; top: 0; z-index: 3;
+  display: flex;
+  background: #1e1e1e;
+}
+.dg-th {
+  position: relative;
+  display: flex; align-items: center; gap: 4px;
+  padding: 5px 8px;
+  background: #1e1e1e;
+  color: var(--text-primary);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border-subtle);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer; user-select: none;
+  box-sizing: border-box;
+}
+.dg-th:hover { background: var(--bg-hover); }
+.dg-th-label { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.dg-pk-badge { margin-right: 3px; font-size: 0.85em; }
+.dg-sort { font-size: 0.75em; color: var(--accent); }
+.dg-resize {
+  position: absolute; right: 0; top: 0; bottom: 0; width: 5px;
+  cursor: col-resize; z-index: 4;
+}
+.dg-resize:hover { background: var(--accent); }
+.dg-row-num-head, .dg-row-num {
+  position: sticky; left: 0; z-index: 2;
+  text-align: right; justify-content: flex-end;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  background: #181818;
+}
+.dg-row-num-head { background: #1e1e1e; z-index: 4; }
+.dg-row-num-sel-able:hover { color: var(--text-primary); }
+/* Selected row gutter — stronger tint than the in-range cell fill */
+.dg-td.dg-row-num.dg-row-num-sel { background: rgba(34, 141, 242, 0.4); color: var(--text-primary); }
+
+.dg-row { display: flex; box-sizing: border-box; }
+/* Faint zebra on the ROW (not the td) so edit-state cell backgrounds, which are
+   set on .dg-td, always paint over it without a specificity fight. */
+.dg-row:nth-child(even) { background: rgba(255, 255, 255, 0.022); }
+.dg-row:hover .dg-td { background: var(--list-hover); }
+.dg-row:hover .dg-row-num { background: var(--bg-hover); }
+.dg-td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  box-sizing: border-box;
+  display: flex; align-items: center;
+  /* Cells use our own range/row selection, not native text selection — keep the
+     pointer an arrow; the I-beam appears only inside the inline editor input. */
+  cursor: default;
+  user-select: none;
+}
+.dg-th.dg-row-num-head.dg-row-num-sel-able { cursor: pointer; }
+.dg-td.dg-row-num {
+  border-right: 1px solid var(--border);
+  cursor: default;
+}
+.dg-null { color: var(--text-muted); font-style: italic; opacity: 0.6; }
+
+/* Edit-state visual marking */
+.dg-td.dg-modified { background: rgba(34, 141, 242, 0.18); }
+.dg-td.dg-selected { background: rgba(34, 141, 242, 0.28); }
+/* Keep selected/modified visible (and distinct) while the row is hovered — the
+   plain `.dg-row:hover .dg-td` rule would otherwise mask them. */
+.dg-row:hover .dg-td.dg-modified { background: rgba(34, 141, 242, 0.30); }
+.dg-row:hover .dg-td.dg-selected { background: rgba(34, 141, 242, 0.45); }
+.dg-row:hover .dg-td.dg-row-num.dg-row-num-sel { background: rgba(34, 141, 242, 0.55); }
+.dg-row-new .dg-td { background: rgba(21, 172, 145, 0.12); }
+.dg-row-deleted .dg-td {
+  background: rgba(241, 76, 76, 0.14);
+  text-decoration: line-through;
+  color: var(--accent-red);
+}
+.dg-rm-new {
+  border: none; background: transparent; color: var(--accent-red);
+  cursor: pointer; font-size: 14px; line-height: 1; padding: 0 4px;
+}
+.dg-cell-editor {
+  width: 100%; height: 100%;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: inherit; font-size: inherit;
+  padding: 0 4px; box-sizing: border-box;
+  outline: none;
+  /* The active editor gets the text caret + selectable text (the parent cell is
+     user-select:none for our own range selection). */
+  cursor: text;
+  user-select: text;
+}
+.dg-cell-editor:is(select) { cursor: pointer; }
+
+.dg-status {
+  padding: 4px 10px;
+  font-size: calc(var(--sql-font-size, 12px) * 0.92);
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  background: var(--bg-titlebar);
+  flex-shrink: 0; min-height: 24px;
+}
+.dg-loading {
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; color: var(--text-muted);
+  font-size: var(--sql-font-size, 12px);
+}
+
+.dg-pagination {
+  display: flex; align-items: center; gap: 12px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-titlebar);
+  font-size: calc(var(--sql-font-size, 12px) * 0.92);
+  color: var(--text-muted);
+  flex-shrink: 0; min-height: 30px;
+}
+.dg-pagination button {
+  border: 1px solid var(--border); border-radius: 4px;
+  background: transparent; color: var(--text-secondary);
+  padding: 2px 8px;
+  font-size: calc(var(--sql-font-size, 12px) * 0.92);
+  cursor: pointer;
+}
+.dg-pagination button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.dg-pagination button:disabled { opacity: 0.35; cursor: default; }
+.dg-pagination select {
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg-surface); color: var(--text-secondary);
+  padding: 2px 4px;
+  font-size: calc(var(--sql-font-size, 12px) * 0.92);
+}
+
+/* Big-cell viewer */
+.dg-viewer-backdrop {
+  position: fixed; inset: 0; z-index: 6000;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.dg-viewer {
+  width: min(900px, 100%); max-height: min(70vh, 720px);
+  display: flex; flex-direction: column;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-surface); overflow: hidden;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+.dg-viewer-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
+}
+.dg-viewer-title { font-size: 12px; color: var(--text-primary); font-weight: 600; flex: 1; }
+.dg-viewer-head button {
+  font-size: 11px; border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 8px; color: var(--text-secondary); cursor: pointer; background: transparent;
+}
+.dg-viewer-body { padding: 10px; overflow: auto; }
+.dg-viewer-body textarea {
+  width: 100%; min-height: 220px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-primary); color: var(--text-primary);
+  padding: 10px; font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
+  resize: vertical;
+}
+
+/* ============ SQL Workbench (DataGrip-style shell) ============ */
+.sql-workbench {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.sql-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  height: 32px;
+  min-height: 32px;
+  background: var(--bg-titlebar);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+.sql-close-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent-red);
+  border: none;
+  opacity: 0.7;
+  cursor: pointer;
+}
+.sql-close-dot:hover { opacity: 1; }
+
+.sql-title-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 600;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sql-titlebar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.sql-titlebar-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* Splitters */
+.sql-splitter {
+  flex-shrink: 0;
+  transition: background 80ms ease;
+}
+.sql-splitter-v {
+  width: 6px;
+  margin: 0 -3px;
+  cursor: col-resize;
+  z-index: 10;
+  background: linear-gradient(to right, transparent calc(50% - 0.5px), var(--border-subtle) calc(50% - 0.5px), var(--border-subtle) calc(50% + 0.5px), transparent calc(50% + 0.5px));
+}
+.sql-splitter-h {
+  height: 6px;
+  margin: -3px 0;
+  cursor: row-resize;
+  z-index: 10;
+  background: linear-gradient(to bottom, transparent calc(50% - 0.5px), var(--border-subtle) calc(50% - 0.5px), var(--border-subtle) calc(50% + 0.5px), transparent calc(50% + 0.5px));
+}
+.sql-splitter-v:hover, .sql-splitter-v:active {
+  background: linear-gradient(to right, transparent calc(50% - 1px), var(--text-muted) calc(50% - 1px), var(--text-muted) calc(50% + 1px), transparent calc(50% + 1px));
+}
+.sql-splitter-h:hover, .sql-splitter-h:active {
+  background: linear-gradient(to bottom, transparent calc(50% - 1px), var(--text-muted) calc(50% - 1px), var(--text-muted) calc(50% + 1px), transparent calc(50% + 1px));
+}
+
+/* Selector strip (connection / database / schema) */
+.sql-selector-strip {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-titlebar);
+}
+
+/* App-styled dropdown (replaces native <select>) */
+.sql-select-wrap { display: inline-flex; }
+.sql-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px 0 10px;
+  font-size: 11px;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.1s ease, background 0.1s ease;
+}
+.sql-select:hover:not(:disabled) { background: var(--bg-hover); border-color: #4a4a4a; }
+.sql-select.open { border-color: var(--accent-green); background: var(--bg-hover); }
+.sql-select:disabled { opacity: 0.45; cursor: default; }
+.sql-select-ic { display: inline-flex; color: var(--text-muted); }
+.sql-select-label { flex: 1; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.sql-select-label.ph { color: var(--text-muted); }
+.sql-select-caret { font-size: 9px; color: var(--text-muted); margin-left: 2px; }
+.sql-select.open .sql-select-caret { color: var(--accent-green); }
+
+.sql-select-menu {
+  position: fixed;
+  z-index: 6000;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+.sql-select-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sql-select-opt:hover { background: var(--bg-hover); color: var(--text-primary); }
+.sql-select-opt.sel { color: var(--text-primary); }
+.sql-select-opt-label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.sql-select-opt-meta { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
+.sql-select-check { width: 10px; color: var(--accent-green); flex-shrink: 0; }
+.sql-select-empty { padding: 6px 8px; font-size: 11px; color: var(--text-muted); }
+
+/* Cascading context menu (database ▸ schema). */
+.sql-ctx-section {
+  padding: 6px 8px 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+.sql-ctx-arrow { color: var(--text-muted); font-size: 9px; flex-shrink: 0; }
+.sql-ctx-sub { z-index: 6001; }
+/* Disconnected/inactive context — query controls are blocked until it restores. */
+.sql-select.sql-select-warn {
+  color: var(--accent-red, #f14c4c);
+  border-color: color-mix(in srgb, var(--accent-red, #f14c4c) 45%, var(--border));
+}
+
+/* Run button overlay in the editor pane */
+.sql-run-btn {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  z-index: 5;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 14px;
+  background: var(--bg-surface);
+  cursor: pointer;
+}
+.sql-run-btn:disabled { cursor: default; }
+
+/* Error banner above results */
+.sql-error-banner {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--accent-red);
+  border-bottom: 1px solid var(--border);
+  white-space: pre-wrap;
+  flex-shrink: 0;
+}
+
+/* Editor toolbar (run / explain / format / history) overlaid on the editor */
+.sql-editor-pane {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.sql-editor-host { flex: 1; min-height: 0; width: 100%; }
+.sql-editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 8px;
+  height: 34px;
+  flex-shrink: 0;
+  background: var(--bg-titlebar);
+  border-bottom: 1px solid var(--border);
+}
+.sql-tb-btn {
+  font-size: 11px;
+  color: var(--text-secondary);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 9px;
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  line-height: 1;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+.sql-tb-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.sql-tb-btn:disabled { opacity: 0.4; cursor: default; }
+.sql-tb-btn.active { background: var(--bg-hover); color: var(--text-primary); }
+.sql-tb-gly { font-size: 9px; opacity: 0.9; }
+/* Run = primary filled accent button */
+.sql-tb-run {
+  background: var(--accent-green);
+  color: #06130f;
+  font-weight: 600;
+  padding: 4px 12px;
+}
+.sql-tb-run .sql-tb-gly { opacity: 1; }
+.sql-tb-run:hover:not(:disabled) { background: #1bc4a5; color: #06130f; }
+.sql-tb-run:disabled { opacity: 0.45; }
+.sql-tb-sep { width: 1px; height: 16px; background: var(--border); margin: 0 4px; }
+.sql-tb-spacer { flex: 1; }
+
+/* Result sub-tabs (multi-statement / explain) */
+.sql-subtab-bar {
+  display: flex;
+  gap: 2px;
+  padding: 4px 6px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-titlebar);
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+.sql-subtab {
+  font-size: 11px;
+  color: var(--text-secondary);
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  padding: 4px 12px;
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sql-subtab:hover { color: var(--text-primary); }
+.sql-subtab.active { background: var(--bg-surface); color: var(--text-primary); border-color: var(--border); }
+.sql-subtab.error { color: var(--accent-red); }
+
+/* Messages view (per-statement summary) */
+.sql-messages { font-size: 12px; }
+.sql-message-row { display: flex; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.sql-message-row.error { background: rgba(241, 76, 76, 0.06); }
+.sql-message-idx { color: var(--text-muted); min-width: 18px; text-align: right; font-variant-numeric: tabular-nums; }
+.sql-message-body { min-width: 0; flex: 1; }
+.sql-message-sql { font-family: 'JetBrains Mono', monospace; color: var(--text-primary); white-space: pre-wrap; word-break: break-word; font-size: 11px; }
+.sql-message-status { color: var(--text-muted); font-size: 11px; margin-top: 2px; }
+.sql-message-status.error { color: var(--accent-red); white-space: pre-wrap; }
+
+/* Explain plan tree */
+.sql-explain-view { font-size: 12px; }
+.sql-explain-stmt { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-muted); padding: 0 0 8px; border-bottom: 1px solid var(--border); margin-bottom: 8px; white-space: pre-wrap; }
+.sql-explain-node { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; flex-wrap: wrap; }
+.sql-explain-toggle { background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 0; width: 14px; }
+.sql-explain-type { color: var(--accent-green); font-weight: 600; }
+.sql-explain-meta { color: var(--accent-yellow); font-size: 11px; }
+.sql-explain-rel { color: var(--text-primary); }
+.sql-explain-cost { color: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.sql-explain-cond { font-size: 11px; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; }
+
+/* History & favorites side panel */
+.sql-history-panel {
+  width: 300px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-surface);
+}
+.sql-history-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 6px 0; border-bottom: 1px solid var(--border); }
+.sql-history-tabs { display: flex; gap: 2px; }
+.sql-history-list { flex: 1; overflow: auto; min-height: 0; }
+.sql-history-empty { padding: 12px; font-size: 12px; color: var(--text-muted); text-align: center; }
+.sql-history-row { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.sql-history-row:hover { background: var(--bg-hover); }
+.sql-history-row.error .sql-history-sql { color: var(--accent-red); }
+.sql-history-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.sql-history-dot.ok { background: var(--accent-green); }
+.sql-history-dot.err { background: var(--accent-red); }
+.sql-history-sql { flex: 1; min-width: 0; font-size: 11px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'JetBrains Mono', monospace; }
+.sql-history-meta { font-size: 10px; color: var(--text-muted); white-space: nowrap; flex-shrink: 0; }
+.sql-history-star { background: transparent; border: none; color: var(--text-muted); cursor: pointer; opacity: 0; padding: 0 2px; }
+.sql-history-row:hover .sql-history-star { opacity: 1; }
+.sql-history-star:hover { color: var(--accent-yellow); }
+
+/* Generic small button used in the tree header / dialog */
+.sql-btn {
+  font-size: 11px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sql-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.sql-btn:disabled { opacity: 0.4; cursor: default; }
+.sql-btn.icon { padding: 2px 6px; }
+.sql-btn.primary { color: var(--text-primary); border-color: var(--accent); }
+.sql-btn.danger { color: var(--accent-red); border-color: var(--accent-red); }
+
+/* Object structure (read-only) inspector */
+.sql-object-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sql-struct-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.sql-struct-title { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.sql-struct-tabs { display: flex; gap: 2px; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.sql-struct-tab {
+  font-size: 11px;
+  padding: 4px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.sql-struct-tab:hover { background: var(--bg-hover); color: var(--text-primary); }
+.sql-struct-tab.active { background: var(--bg-hover); color: var(--text-primary); }
+.sql-struct-error { color: var(--accent-red); font-size: 12px; padding: 6px 12px; }
+.sql-struct-body { flex: 1; min-height: 0; overflow: auto; }
+.sql-struct-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.sql-struct-table th {
+  text-align: left;
+  padding: 6px 10px;
+  color: var(--text-muted);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg-surface);
+}
+.sql-struct-table td { padding: 5px 10px; border-bottom: 1px solid var(--border); color: var(--text-primary); }
+.sql-struct-mono { font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, monospace; color: var(--text-muted); }
+.sql-struct-empty { color: var(--text-muted); font-style: italic; padding: 10px; text-align: center; }
+
+/* Dialect chip in the tree (per-dialect badge) */
+.sql-dialect-chip {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 3px;
+  line-height: 13px;
+  flex-shrink: 0;
+}
+
+/* Context menu (connection right-click) */
+.sql-context-menu {
+  position: absolute;
+  min-width: 150px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+.sql-context-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.sql-context-menu button:hover { background: var(--bg-hover); }
+.sql-context-menu button.danger { color: var(--accent-red); }
+
+/* ============ SQL Connection Dialog (wizard) ============ */
+.sql-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Above container overlays / popovers (which reach ~9100) so the modal is
+     always interactable, even when the SQL pane is in focus mode. */
+  z-index: 9600;
+}
+.sql-modal {
+  width: 480px;
+  max-width: 92vw;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sql-modal-title {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.sql-modal-message {
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+.sql-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Transient success toast (export/import) */
+.sql-export-toast {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 80%;
+  padding: 8px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+  z-index: 3200;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Dialect selector — segmented buttons */
+.sql-dialect-selector {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.sql-dialect-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+}
+.sql-dialect-option:hover { background: var(--bg-hover); }
+.sql-dialect-option.active {
+  background: var(--list-active);
+  color: var(--text-primary);
+}
+.sql-dialect-badge {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: #fff;
+  border-radius: 3px;
+  padding: 1px 4px;
+  line-height: 12px;
+  flex-shrink: 0;
+}
+.sql-dialect-label { white-space: nowrap; }
+
+/* Drag handle */
+.container-drag-handle {
+  cursor: grab;
+}
+
+.container-drag-handle:active {
+  cursor: grabbing;
+}
+
+/* Ensure container overlay effects stack above inner content */
+[data-container-id] {
+  position: relative;
+  isolation: isolate;
+}
+
+[data-container-id][data-content-type="terminal"] {
+  isolation: auto;
+}
+
+/* Focused container outline over the full tile bounds */
+[data-container-id].container-focused::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  border: 1px solid rgba(53, 157, 255, 0.55);
+  box-shadow:
+    0 0 0 1px rgba(53, 157, 255, 0.2),
+    0 0 14px rgba(53, 157, 255, 0.16);
+  pointer-events: none;
+  z-index: 60;
+}
+
+/* Terminals render into a GPU-composited <canvas> (xterm WebGL) that paints over
+   a container outline / ::after on the sides it covers. Use an overlay element
+   inside the terminal promoted to its own compositing layer so the focus ring
+   always sits above the canvas — consistently for both xterm and ghostty. */
+[data-container-id][data-content-type="terminal"].container-focused::after {
+  display: none;
+}
+
+.terminal-focus-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  border: 1px solid rgba(53, 157, 255, 0.55);
+  box-shadow:
+    0 0 0 1px rgba(53, 157, 255, 0.2),
+    0 0 14px rgba(53, 157, 255, 0.16);
+  pointer-events: none;
+  z-index: 60;
+  display: none;
+  transform: translateZ(0);
+}
+
+.container-focused .terminal-focus-ring {
+  display: block;
+}
+
+/* Subtle dimming for non-focused containers */
+[data-container-id]:not(.container-focused):not(.drag-source):not(.drag-target) {
+  transition: opacity 180ms ease;
+}
+
+[data-container-id]:not(.container-focused):not(.drag-source):not(.drag-target)::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.24);
+  pointer-events: none;
+  z-index: 18;
+}
+
+[data-container-id][data-content-type="terminal"]:not(.container-focused):not(.drag-source):not(.drag-target)::before {
+  display: none;
+}
+
+/* The ::before dim overlay can't cover a terminal's GPU-composited WebGL canvas,
+   so terminals dim via a real DOM element promoted to its own compositing layer
+   (mirrors .terminal-focus-ring). Visible whenever the container isn't focused. */
+.terminal-dim-overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.24);
+  pointer-events: none;
+  z-index: 19;
+  opacity: 1;
+  transform: translateZ(0);
+  transition: opacity 180ms ease;
+}
+
+.container-focused .terminal-dim-overlay,
+.drag-source .terminal-dim-overlay,
+.drag-target .terminal-dim-overlay {
+  opacity: 0;
+}
+
+/* Focus mode — one container expanded over the whole grid. The cell itself only
+   carries the depth shadow; the purple glowing frame is a separate overlay
+   element (.focus-mode-glow) so we can pulse it cheaply (see below). */
+[data-container-id].container-focus-mode {
+  border-radius: 8px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55);
+}
+
+/* Glowing purple frame for the focused container. A real overlay element on its
+   own compositing layer (the same translateZ(0) trick as .terminal-focus-ring)
+   so it sits ABOVE a terminal's GPU canvas. The glow points INWARD so the cell's
+   overflow:hidden doesn't clip it.
+   The pulse animates ONLY opacity — a compositor-only property — so it stays
+   buttery-smooth with no per-frame repaint. (The previous design animated a
+   gradient's background-position, which repaints every frame and pinned the GPU
+   for as long as focus mode was held — never animate box-shadow/gradient here.) */
+.focus-mode-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 1002;
+  border: 1.5px solid rgba(176, 130, 226, 0.9);
+  box-shadow:
+    inset 0 0 6px 0 rgba(176, 130, 226, 0.5),
+    inset 0 0 14px 2px rgba(138, 90, 179, 0.28);
+  transform: translateZ(0);
+  animation: focusGlowPulse 3.4s ease-in-out infinite;
+  will-change: opacity;
+}
+@keyframes focusGlowPulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .focus-mode-glow { animation: none; opacity: 0.85; }
+}
+/* The focused cell must never be dimmed or carry the blue keyboard-focus ring —
+   only the gradient frame shows. */
+[data-container-id].container-focus-mode::before { display: none !important; }
+[data-container-id].container-focus-mode.container-focused::after { display: none !important; }
+.container-focus-mode .terminal-dim-overlay { opacity: 0 !important; }
+.container-focus-mode .terminal-focus-ring { display: none !important; }
+
+/* Fast chat (QuickChat palette) entrance animations */
+@keyframes fastChatMessageIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fastChatViewIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fastchat-msg { animation: fastChatMessageIn 240ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.fastchat-view { animation: fastChatViewIn 220ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .fastchat-msg, .fastchat-view { animation: none; }
+}
+
+/* Drag-to-swap highlights */
+[data-container-id].drag-source {
+  opacity: 0.3;
+  filter: brightness(0.6) saturate(0.5);
+  transition: opacity 0.2s ease, filter 0.2s ease;
+}
+
+[data-container-id].drag-target {
+  position: relative;
+  transition: transform 0.15s ease;
+}
+
+[data-container-id].drag-target::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border: 2px dashed rgba(76, 157, 243, 0.5);
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 20;
+  background: rgba(76, 157, 243, 0.05);
+  animation: drag-target-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes drag-target-pulse {
+  0%, 100% { border-color: rgba(76, 157, 243, 0.3); background: rgba(76, 157, 243, 0.03); }
+  50% { border-color: rgba(76, 157, 243, 0.6); background: rgba(76, 157, 243, 0.07); }
+}
+
+/* Toast animations */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes toast-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Animated trailing dots for the sidebar "Working …" terminal state. */
+.splitgrid-working::after {
+  content: ' …';
+  animation: splitgrid-working-dots 1.4s steps(1, end) infinite;
+}
+@keyframes splitgrid-working-dots {
+  0%   { content: ' ·  '; }
+  33%  { content: ' ·· '; }
+  66%  { content: ' ···'; }
+  100% { content: ' ·  '; }
+}
+
+/* "Casting to web" indicators — a smooth green radar-ping. Used on the per-pane
+   stream toggle (when active) and the sidebar terminal status dot (when the
+   terminal is streaming). The expanding-then-fading ring reads as "live". */
+@keyframes splitgrid-cast-ring {
+  0%        { box-shadow: 0 0 0 0   rgba(21, 172, 145, 0.55); }
+  70%, 100% { box-shadow: 0 0 0 5px rgba(21, 172, 145, 0); }
+}
+@keyframes splitgrid-cast-glow {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+/* Sidebar status dot: ring + a soft opacity breathe. */
+.splitgrid-stream-pulse {
+  animation: splitgrid-cast-ring 1.8s ease-out infinite, splitgrid-cast-glow 1.8s ease-in-out infinite;
+}
+/* Pane header toggle button: a slightly wider ring around the icon. */
+.splitgrid-cast-btn {
+  animation: splitgrid-cast-ring 1.8s ease-out infinite;
+}
+.splitgrid-cast-btn svg {
+  animation: splitgrid-cast-glow 1.8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .splitgrid-stream-pulse,
+  .splitgrid-cast-btn,
+  .splitgrid-cast-btn svg { animation: none; }
+}
+
+/* Fast chat — markdown answer rendering. Constrain everything to the palette so
+   long words/URLs, code blocks and tables never overflow the rounded container. */
+.qc-md {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.qc-md > *:first-child { margin-top: 0; }
+.qc-md > *:last-child { margin-bottom: 0; }
+.qc-md p { margin: 6px 0; }
+.qc-md ul, .qc-md ol { margin: 6px 0; padding-left: 22px; }
+.qc-md li { margin: 2px 0; }
+.qc-md h1, .qc-md h2, .qc-md h3, .qc-md h4, .qc-md h5 { margin: 12px 0 6px; line-height: 1.3; }
+.qc-md pre { max-width: 100%; }
+.qc-md blockquote {
+  margin: 6px 0;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--border);
+  color: var(--text-secondary);
+}
+.qc-md table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 6px 0;
+}
+.qc-md th, .qc-md td { border: 1px solid var(--border); padding: 4px 8px; }
+.qc-md img { max-width: 100%; height: auto; }
+.qc-md hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }

@@ -1,0 +1,25 @@
+{
+  "name": "claude-hooks-daemon",
+  "version": "1.0.0",
+  "description": "Standalone daemon that receives Claude Code hook events and broadcasts them via WebSocket",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "claude-hooks-daemon": "dist/server.js",
+    "claude-hooks-install": "dist/install.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsc --watch & node --watch dist/server.js",
+    "install-hooks": "node dist/install.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

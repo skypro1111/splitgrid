@@ -1,0 +1,11 @@
+<!--
+  Swapit LOGO mark — the "S" (< over >) on a transparent background, drawn in
+  white so it reads on the app's dark surfaces. Same glyph geometry as the
+  app-icon tile (build/icon.svg), just filled instead of cut out.
+-->
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <text x="256" y="212.875" font-family="Arial, sans-serif" font-size="445"
+    font-weight="900" fill="#FFFFFF" text-anchor="middle" dominant-baseline="middle">&lt;</text>
+  <text x="256" y="382.875" font-family="Arial, sans-serif" font-size="445"
+    font-weight="900" fill="#FFFFFF" text-anchor="middle" dominant-baseline="middle">&gt;</text>
+</svg>
