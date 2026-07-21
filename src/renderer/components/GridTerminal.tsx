@@ -10,6 +10,7 @@ import { SshPasswordHint, computeSshHintAnchor, type SshHintAnchor } from './Ssh
 import { useSshPasswordOffer } from '../hooks/useSshPasswordOffer';
 import { dragHasPaths, getDroppedPaths } from './terminalDrop';
 import { pasteClipboardIntoTerminal } from './clipboardPaste';
+import { latinKey } from '../../shared/keyboard';
 import { promptStreamLogin } from './streamLoginPrompt';
 import type {
   TerminalRendererMetrics,
@@ -572,7 +573,9 @@ export const GridTerminal: React.FC<GridTerminalProps> = ({
         }
 
         if (isMac && ev.metaKey && !ev.ctrlKey && !ev.altKey) {
-          const key = ev.key.toLowerCase();
+          // latinKey, not ev.key: under a non-latin layout (uk/ru) ev.key is the
+          // Cyrillic character, so a plain `=== 'c'` check never fires.
+          const key = latinKey(ev);
 
           if (ev.key === 'ArrowLeft') {
             consumeTerminalShortcut(ev);
@@ -641,7 +644,7 @@ export const GridTerminal: React.FC<GridTerminalProps> = ({
         // Windows/Linux: Ctrl+Shift+V pastes, Ctrl+Shift+C copies the selection
         // (plain Ctrl+V/Ctrl+C remain the control codes the shell expects).
         if (!isMac && ev.ctrlKey && ev.shiftKey && !ev.altKey && !ev.metaKey) {
-          const key = ev.key.toLowerCase();
+          const key = latinKey(ev);
           if (key === 'v') {
             consumeTerminalShortcut(ev);
             pasteClipboardIntoTerminal(

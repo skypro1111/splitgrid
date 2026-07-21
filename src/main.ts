@@ -30,6 +30,7 @@ import { AppSettingsStore } from './main/app-settings-store';
 import { initWorkosAuth, handleDeepLinkArgv } from './main/workos-auth';
 import { migrateLegacyUserData } from './main/userdata-migration';
 import { TEMP_DISABLE_INPUT_INTERCEPTS } from './shared/runtime-flags';
+import { latinKey } from './shared/keyboard';
 import { getQuickChatHotkey, getFocusModeHotkey, isCapturingQuickChatHotkey } from './main/quick-chat-hotkey-state';
 import { hotkeyMatchesInput } from './shared/quick-chat-hotkey';
 
@@ -307,7 +308,7 @@ const createWindow = (setId = DEFAULT_WORKSPACE_SET_ID) => {
       return;
     }
     if (TEMP_DISABLE_INPUT_INTERCEPTS) return;
-    const key = input.key.toLowerCase();
+    const key = latinKey(input);
     if ((input.meta || input.control) && (key === 'w' || key === 'r')) {
       event.preventDefault();
     }
@@ -645,7 +646,7 @@ app.on('web-contents-created', (_event, contents) => {
       return;
     }
     if (TEMP_DISABLE_INPUT_INTERCEPTS) return;
-    const key = input.key.toLowerCase();
+    const key = latinKey(input);
     const isReloadShortcut =
       (input.meta || input.control) &&
       !input.alt &&

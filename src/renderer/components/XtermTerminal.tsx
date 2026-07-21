@@ -14,6 +14,7 @@ import { SshPasswordHint, computeSshHintAnchor, type SshHintAnchor } from './Ssh
 import { useSshPasswordOffer } from '../hooks/useSshPasswordOffer';
 import { dragHasPaths, getDroppedPaths } from './terminalDrop';
 import { pasteClipboardIntoTerminal } from './clipboardPaste';
+import { latinKey } from '../../shared/keyboard';
 import { promptStreamLogin } from './streamLoginPrompt';
 import type {
   TerminalRendererMetrics,
@@ -467,7 +468,9 @@ export const XtermTerminal: React.FC<XtermTerminalProps> = ({
         }
 
         if (isMac && ev.metaKey && !ev.ctrlKey && !ev.altKey) {
-          const key = ev.key.toLowerCase();
+          // latinKey, not ev.key: under a non-latin layout (uk/ru) ev.key is the
+          // Cyrillic character, so a plain `=== 'c'` check never fires.
+          const key = latinKey(ev);
 
           if (ev.key === 'ArrowLeft') {
             consumeTerminalShortcut(ev);
@@ -532,7 +535,7 @@ export const XtermTerminal: React.FC<XtermTerminalProps> = ({
         // copies the selection (plain Ctrl+V/Ctrl+C stay as the control codes the
         // shell expects). xterm doesn't bind these itself, so handle them here.
         if (!isMac && ev.ctrlKey && ev.shiftKey && !ev.altKey && !ev.metaKey) {
-          const key = ev.key.toLowerCase();
+          const key = latinKey(ev);
           if (key === 'v') {
             consumeTerminalShortcut(ev);
             pasteClipboardIntoTerminal(terminal, (data) => sendData(sessionIdRef.current, data), sessionMetaRef.current);

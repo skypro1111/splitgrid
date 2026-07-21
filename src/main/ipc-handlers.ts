@@ -4,6 +4,7 @@ import { readdir, readFile, writeFile, stat, lstat, rename, mkdir, copyFile, cp,
 import { watch } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import ignore from 'ignore';
 import chokidar from 'chokidar';
 import { TerminalManager } from './terminal-manager';
@@ -73,6 +74,65 @@ const quickChatHistoryStore = new QuickChatHistoryStore();
 // before-input-event matching is correct from the first keystroke.
 setQuickChatHotkey(appSettingsStore.get().quickChatHotkey);
 setFocusModeHotkey(appSettingsStore.get().focusModeHotkey);
+
+// Windows path (C:\dir\file.png) → the /mnt/<drive>/… form a CLI running inside
+// WSL can actually open. Anything else is returned untouched.
+function toWslPath(p: string): string {
+  const m = /^([A-Za-z]):[\\/](.*)$/.exec(p);
+  return m ? `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}` : p;
+}
+
+// Absolute paths of files currently copied to the clipboard (empty when the
+// clipboard holds no file references). Each platform publishes them under its
+// own format; none of them is plain text, so readText() can't see them.
+function readClipboardFilePaths(): string[] {
+  const out: string[] = [];
+  const push = (p: string) => {
+    const t = p.trim();
+    if (t && !out.includes(t)) out.push(t);
+  };
+  // A uri-list may also carry http(s) URLs (copying a link in a browser) —
+  // take only real files, so a copied link still pastes as text.
+  const fromUriList = (raw: string) => {
+    for (const line of raw.split(/\r?\n/)) {
+      const s = line.trim();
+      if (!s || s.startsWith('#')) continue;
+      if (/^file:\/\//i.test(s)) {
+        try { push(fileURLToPath(s)); } catch { /* malformed URL — skip */ }
+      } else if (path.isAbsolute(s)) {
+        push(s);
+      }
+    }
+  };
+
+  try {
+    if (process.platform === 'win32') {
+      // CF_HDROP (multi-file) isn't reachable through Electron's format names,
+      // but the shell publishes the same drop as "FileNameW" — UTF-16LE, one
+      // file. That covers copy-one-file, which is the case that matters.
+      const wide = clipboard.readBuffer('FileNameW');
+      if (wide && wide.length > 0) {
+        push(wide.toString('utf16le').replace(/\0+$/, ''));
+      } else {
+        const ansi = clipboard.readBuffer('FileName');
+        if (ansi && ansi.length > 0) push(ansi.toString('latin1').replace(/\0+$/, ''));
+      }
+    } else if (process.platform === 'darwin') {
+      fromUriList(clipboard.read('public.file-url'));
+    }
+  } catch {
+    // Format absent or unreadable — fall through to text/uri-list.
+  }
+
+  if (out.length === 0) {
+    try {
+      fromUriList(clipboard.read('text/uri-list'));
+    } catch {
+      // No file formats on the clipboard.
+    }
+  }
+  return out;
+}
 
 export interface IPCHandlersAPI {
   closeSessionsForWindow(webContentsId: number): void;
@@ -2056,6 +2116,19 @@ export function registerIPCHandlers(
     return !image.isEmpty();
   });
 
+  // Files copied in Explorer/Finder/Nautilus sit on the clipboard as file
+  // references, never as text — clipboard.readText() comes back empty, which is
+  // why "copy a file, paste into the terminal" used to do nothing at all.
+  // Terminals paste the paths instead, exactly like a drag-drop.
+  //   target='wsl': translate C:\… to /mnt/c/… for a session inside WSL.
+  ipcMain.handle(
+    'clipboard:read-file-paths',
+    async (_e, target?: 'wsl' | null): Promise<string[]> => {
+      const paths = readClipboardFilePaths();
+      return target === 'wsl' ? paths.map(toWslPath) : paths;
+    },
+  );
+
   // Materialize the clipboard image to a temp PNG and return its path (null when
   // the clipboard holds no image). Terminals type this path in — mimicking a file
   // drag-drop — so the AI CLI (Claude Code / Codex / Cursor) reads it as an image.
@@ -2092,11 +2165,7 @@ export function registerIPCHandlers(
       const file = path.join(dir, `paste-${Date.now()}-${clipboardImageCounter}.png`);
       await writeFile(file, png);
 
-      if (target === 'wsl') {
-        const m = /^([A-Za-z]):[\\/](.*)$/.exec(file);
-        if (m) return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`;
-      }
-      return file;
+      return target === 'wsl' ? toWslPath(file) : file;
     },
   );
 

@@ -1048,6 +1048,8 @@ export interface ElectronAPI {
   selectDirectory(): Promise<string | null>;
   clipboardHasImage(): Promise<boolean>;
   clipboardSaveImageTemp(target?: 'wsl' | null): Promise<string | null>;
+  /** Paths of files copied in the OS file manager ([] when there are none). */
+  clipboardReadFilePaths(target?: 'wsl' | null): Promise<string[]>;
   clipboardWriteText(text: string): Promise<void>;
   clipboardReadText(): Promise<string>;
   /** Absolute path of a dropped/selected OS File (replaces removed File.path). */

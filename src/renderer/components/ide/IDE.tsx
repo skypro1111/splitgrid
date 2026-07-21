@@ -10,6 +10,7 @@ import type {
   WorkspaceSyncConfig,
 } from '../../../shared/types';
 import { TEMP_DISABLE_INPUT_INTERCEPTS } from '../../../shared/runtime-flags';
+import { latinKey } from '../../../shared/keyboard';
 import { ToastContainer } from '../Toast';
 
 class IDEErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -183,15 +184,18 @@ export const IDE: React.FC<Props> = ({
     if (TEMP_DISABLE_INPUT_INTERCEPTS) return;
     const handler = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
+      // Physical-position match so the chords still fire under a non-latin
+      // keyboard layout (where e.key would be a Cyrillic character).
+      const key = latinKey(e);
 
       // Cmd+B = toggle sidebar
-      if (mod && e.key === 'b') {
+      if (mod && key === 'b') {
         e.preventDefault();
         setSidebarCollapsed(v => !v);
       }
 
       // Cmd+W = close active tab
-      if (mod && e.key === 'w') {
+      if (mod && key === 'w') {
         const root = rootRef.current;
         const active = document.activeElement as HTMLElement | null;
         const isIdeDomFocused = !!(root && active && root.contains(active));

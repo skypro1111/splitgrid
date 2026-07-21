@@ -1,4 +1,5 @@
 import type { QuickChatHotkey } from './types';
+import { latinKey } from './keyboard';
 
 // Shared, pure hotkey logic used by both the main process (matching keystrokes in
 // before-input-event) and the renderer (capturing + displaying the chord). Keep
@@ -9,6 +10,8 @@ import type { QuickChatHotkey } from './types';
 export interface HotkeyInput {
   type?: string; // 'keyDown' | 'keyUp' (Electron) — DOM events omit this
   key: string;
+  /** Physical key position; used so chords survive non-latin layouts. */
+  code?: string;
   meta?: boolean;
   control?: boolean;
   alt?: boolean;
@@ -32,7 +35,9 @@ export function defaultFocusModeHotkey(platform: string): QuickChatHotkey {
 export function normalizeQuickChatHotkey(v: unknown): QuickChatHotkey | undefined {
   if (!v || typeof v !== 'object') return undefined;
   const o = v as Record<string, unknown>;
-  const key = typeof o.key === 'string' ? o.key.toLowerCase() : '';
+  const key = typeof o.key === 'string'
+    ? latinKey({ key: o.key, code: typeof o.code === 'string' ? o.code : undefined })
+    : '';
   if (!key) return undefined;
   const h: QuickChatHotkey = {
     key,
@@ -47,11 +52,12 @@ export function normalizeQuickChatHotkey(v: unknown): QuickChatHotkey | undefine
 }
 
 /** Does a keystroke match the configured chord? Exact modifier equality so that
- * e.g. ⌘⇧K does not fire a ⌘K binding. */
+ * e.g. ⌘⇧K does not fire a ⌘K binding. Matched on the physical key where the
+ * layout produces a non-latin character, so ⌘K still works under uk/ru. */
 export function hotkeyMatchesInput(hotkey: QuickChatHotkey, input: HotkeyInput): boolean {
   if (input.type && input.type !== 'keyDown') return false;
   return (
-    input.key.toLowerCase() === hotkey.key &&
+    latinKey(input) === hotkey.key &&
     !!input.meta === !!hotkey.meta &&
     !!input.control === !!hotkey.control &&
     !!input.alt === !!hotkey.alt &&

@@ -153,6 +153,8 @@ const api: ElectronAPI = {
   clipboardHasImage: () => ipcRenderer.invoke('clipboard:has-image'),
   clipboardSaveImageTemp: (target?: 'wsl' | null) =>
     ipcRenderer.invoke('clipboard:save-image-temp', target ?? null),
+  clipboardReadFilePaths: (target?: 'wsl' | null) =>
+    ipcRenderer.invoke('clipboard:read-file-paths', target ?? null),
   clipboardWriteText: (text: string) => ipcRenderer.invoke('clipboard:write-text', text),
   clipboardReadText: () => ipcRenderer.invoke('clipboard:read-text'),
   // Electron 32+ removed File.path; this is the supported way to resolve the

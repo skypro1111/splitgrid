@@ -219,7 +219,9 @@ export const HotkeyRecorder: React.FC<{
     if (e.key === 'Escape') { stop(); return; }
     if (['Meta', 'Control', 'Alt', 'Shift'].includes(e.key)) return;
     const candidate = normalizeQuickChatHotkey({
-      key: e.key.toLowerCase(), meta: e.metaKey, control: e.ctrlKey, alt: e.altKey, shift: e.shiftKey,
+      // code goes along so a chord recorded under a non-latin layout is stored
+      // as its latin equivalent (normalizeQuickChatHotkey resolves it).
+      key: e.key, code: e.code, meta: e.metaKey, control: e.ctrlKey, alt: e.altKey, shift: e.shiftKey,
     });
     if (!candidate) {
       setHint(`Add a modifier (${platform === 'darwin' ? '⌘ / ⌃ / ⌥' : 'Ctrl / Alt'}).`);
