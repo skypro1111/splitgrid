@@ -1,4 +1,18 @@
-# SplitGrid
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="public/logos/readme/logo-dark.png">
+    <img src="public/logos/readme/logo-light.png" alt="SplitGrid" width="96" height="96">
+  </picture>
+</p>
+
+<h1 align="center">SplitGrid</h1>
+
+<p align="center">
+  A workspace terminal manager for the age of coding agents.<br>
+  <a href="https://splitgrid.dev">splitgrid.dev</a>
+</p>
+
+---
 
 A workspace-oriented terminal manager built with Electron + React. SplitGrid packs
 SSH and local terminals, a Postgres SQL client, a Monaco-based code editor,
