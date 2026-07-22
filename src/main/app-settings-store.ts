@@ -22,6 +22,10 @@ const DEFAULTS: AppSettings = {
   agentSqlControl: false,
   // Sub-sub-opt-in under agentSqlControl: allow write/DDL. Off by default.
   agentSqlWrite: false,
+  // Sub-opt-in under agentIntegrations: SFTP access (read-only). Off by default.
+  agentSftpControl: false,
+  // Sub-sub-opt-in under agentSftpControl: allow uploads/changes. Off by default.
+  agentSftpWrite: false,
   // Off by default: SplitGrid does not edit ~/.tmux.conf / ~/.screenrc until the
   // user opts in. Toggling it writes/removes a managed mouse-mode block.
   terminalMouseScroll: false,
@@ -103,6 +107,8 @@ export class AppSettingsStore {
         agentTerminalControl: typeof o.agentTerminalControl === 'boolean' ? o.agentTerminalControl : DEFAULTS.agentTerminalControl,
         agentSqlControl: typeof o.agentSqlControl === 'boolean' ? o.agentSqlControl : DEFAULTS.agentSqlControl,
         agentSqlWrite: typeof o.agentSqlWrite === 'boolean' ? o.agentSqlWrite : DEFAULTS.agentSqlWrite,
+        agentSftpControl: typeof o.agentSftpControl === 'boolean' ? o.agentSftpControl : DEFAULTS.agentSftpControl,
+        agentSftpWrite: typeof o.agentSftpWrite === 'boolean' ? o.agentSftpWrite : DEFAULTS.agentSftpWrite,
         terminalMouseScroll: typeof o.terminalMouseScroll === 'boolean' ? o.terminalMouseScroll : DEFAULTS.terminalMouseScroll,
       };
     } catch {
@@ -127,6 +133,8 @@ export class AppSettingsStore {
       agentTerminalControl: !!settings.agentTerminalControl,
       agentSqlControl: !!settings.agentSqlControl,
       agentSqlWrite: !!settings.agentSqlWrite,
+      agentSftpControl: !!settings.agentSftpControl,
+      agentSftpWrite: !!settings.agentSftpWrite,
       terminalMouseScroll: !!settings.terminalMouseScroll,
     };
     const dir = path.dirname(this.filePath);

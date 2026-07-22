@@ -226,6 +226,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     !!draft.agentIntegrations !== !!settings.agentIntegrations ||
     !!draft.agentTerminalControl !== !!settings.agentTerminalControl ||
     !!draft.agentSqlControl !== !!settings.agentSqlControl ||
+    !!draft.agentSftpControl !== !!settings.agentSftpControl ||
+    !!draft.agentSftpWrite !== !!settings.agentSftpWrite ||
     !!draft.agentSqlWrite !== !!settings.agentSqlWrite ||
     !!draft.terminalMouseScroll !== !!settings.terminalMouseScroll ||
     fcCanon(draft.fastChat) !== fcCanon(settings.fastChat) ||
@@ -584,6 +586,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       desc={
                         <>Also permit writes, data modification and schema changes (INSERT/UPDATE/DELETE,
                         DDL). Off by default — leave off to keep agents read-only.</>
+                      }
+                    />
+                  </div>
+                </div>
+                <div style={{ marginLeft: 22, marginTop: 14 }}>
+                  <Toggle
+                    label="Allow agents to transfer files over SFTP (read-only)"
+                    checked={!!draft.agentIntegrations && !!draft.agentSftpControl}
+                    disabled={!draft.agentIntegrations}
+                    onChange={(v) => set({ agentSftpControl: v, ...(v ? {} : { agentSftpWrite: false }) })}
+                    desc={
+                      <>Install the <code>sg-sftp</code> skill and inject <code>SPLITGRID_SFTP_*</code> env,
+                      letting an agent list and download files from its workspace's remote hosts — its sync
+                      targets and the hosts of its SSH panes. Local paths stay inside the workspace directory.
+                      Off by default.</>
+                    }
+                  />
+                  <div style={{ marginLeft: 22, marginTop: 14 }}>
+                    <Toggle
+                      label="Allow agents to upload / change remote files (write)"
+                      checked={!!draft.agentIntegrations && !!draft.agentSftpControl && !!draft.agentSftpWrite}
+                      disabled={!draft.agentIntegrations || !draft.agentSftpControl}
+                      onChange={(v) => set({ agentSftpWrite: v })}
+                      desc={
+                        <>Also permit uploads, workspace sync and remote mkdir/rename/delete. Without this an
+                        agent can only look and download. Off by default.</>
                       }
                     />
                   </div>

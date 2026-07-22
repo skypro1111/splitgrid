@@ -2,7 +2,10 @@ import { syncInstalledAgentHooks, uninstallAgentHooks, removeRenamedLegacyAgentH
 import { AGENT_HOOK_DEFS } from './agent-hooks/registry';
 import { syncInstalledAgentSkills, uninstallAgentSkills, removeRenamedLegacyAgentSkills } from './agent-skills/installer';
 import { syncWslAgentArtifacts } from './agent-wsl-install';
-import { setAgentIntegrationsEnabled, setAgentTerminalControlEnabled, setAgentSqlControlEnabled, setAgentSqlWriteEnabled } from './local-shell-manager';
+import {
+  setAgentIntegrationsEnabled, setAgentTerminalControlEnabled, setAgentSqlControlEnabled,
+  setAgentSqlWriteEnabled, setAgentSftpControlEnabled, setAgentSftpWriteEnabled,
+} from './local-shell-manager';
 import { setTerminalControlEnabled } from './agent-terminal-bridge';
 
 // ─── Agent integrations: the single permission gate ──────────────────────────
@@ -13,6 +16,7 @@ import { setTerminalControlEnabled } from './agent-terminal-bridge';
 //   • the splitgrid-browser skill in ~/.claude/skills,
 //   • the splitgrid-terminal skill — gated on the agentTerminalControl sub-opt-in,
 //   • the splitgrid-sql skill — gated on the agentSqlControl sub-opt-in,
+//   • the splitgrid-sftp skill — gated on the agentSftpControl sub-opt-in,
 //   • the same artifacts inside each WSL distro's Linux ~/.claude,
 //   • the SPLITGRID_* env injected into local terminals (the SPLITGRID_TERMINAL_* part
 //     also gated on the sub-opt-in).
@@ -30,20 +34,25 @@ export function initAgentIntegrations(
   terminalControl = false,
   sqlControl = false,
   sqlWrite = false,
+  sftpControl = false,
+  sftpWrite = false,
 ): void {
   const terminal = enabled && terminalControl;
   const sql = enabled && sqlControl;
+  const sftp = enabled && sftpControl;
   setAgentIntegrationsEnabled(enabled);
   setAgentTerminalControlEnabled(terminal);
   setTerminalControlEnabled(terminal);
   setAgentSqlControlEnabled(sql);
   setAgentSqlWriteEnabled(sql && sqlWrite);
+  setAgentSftpControlEnabled(sftp);
+  setAgentSftpWriteEnabled(sftp && sftpWrite);
   if (enabled) {
     // Each installer is gated on the agent actually being present and is
     // idempotent, so this also refreshes stale helper paths after an update.
     syncInstalledAgentHooks();
-    syncInstalledAgentSkills(terminal, sql);
-    void syncWslAgentArtifacts(terminal, sql);
+    syncInstalledAgentSkills(terminal, sql, sftp);
+    void syncWslAgentArtifacts(terminal, sql, sftp);
   }
 }
 
@@ -57,9 +66,11 @@ export function applyAgentIntegrations(
   terminalControl = false,
   sqlControl = false,
   sqlWrite = false,
+  sftpControl = false,
+  sftpWrite = false,
 ): void {
   if (enabled) {
-    initAgentIntegrations(true, terminalControl, sqlControl, sqlWrite);
+    initAgentIntegrations(true, terminalControl, sqlControl, sqlWrite, sftpControl, sftpWrite);
     return;
   }
 
@@ -72,6 +83,8 @@ export function applyAgentIntegrations(
   setTerminalControlEnabled(false);
   setAgentSqlControlEnabled(false);
   setAgentSqlWriteEnabled(false);
+  setAgentSftpControlEnabled(false);
+  setAgentSftpWriteEnabled(false);
   for (const def of AGENT_HOOK_DEFS) {
     try {
       uninstallAgentHooks(def);

@@ -328,6 +328,16 @@ const api: ElectronAPI = {
   },
   sendSqlResult: (payload) => ipcRenderer.send('sql:result', payload),
 
+  // Agent SFTP access: main relays an agent's SFTP command here; the renderer
+  // resolves the caller's workspace, picks the target host (a sync target or an
+  // SSH pane), runs the transfer and replies keyed by reqId.
+  onSftpCommand: (callback) => {
+    const handler = (_e: Electron.IpcRendererEvent, payload: { reqId: string; terminal: string; argv: string[]; writeAllowed: boolean }) => callback(payload);
+    ipcRenderer.on('sftp-agent:command', handler);
+    return () => ipcRenderer.removeListener('sftp-agent:command', handler);
+  },
+  sendSftpResult: (payload) => ipcRenderer.send('sftp-agent:result', payload),
+
   // Static platform marker (resolved once at preload load time). Lets
   // renderer code branch on macOS vs Windows vs Linux without IPC churn.
   platform: process.platform,

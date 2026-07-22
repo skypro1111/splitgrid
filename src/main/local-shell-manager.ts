@@ -8,7 +8,7 @@ import { execFile, spawn } from 'node:child_process';
 import { RECEIVER_PORT } from './agent-activity-receiver';
 import { BROWSER_TOKEN } from './agent-browser-bridge';
 import { bridgeDirPath } from './agent-file-bridge';
-import { hookHelperPath, browserHelperPath, terminalHelperPath, sqlHelperPath } from './agent-hooks/paths';
+import { hookHelperPath, browserHelperPath, terminalHelperPath, sqlHelperPath, sftpHelperPath } from './agent-hooks/paths';
 import {
   detectWslDistros, isWslShell, wslDistroFromShell, wslShellFor, wslExePath,
 } from './wsl';
@@ -72,6 +72,33 @@ export function setAgentSqlWriteEnabled(enabled: boolean): void {
 // comes from main on each call.
 export function isAgentSqlWriteEnabled(): boolean {
   return sqlWriteEnabled;
+}
+
+// Sub-gate (only matters while agentIntegrationsEnabled): inject the
+// SPLITGRID_SFTP_* env so an agent can move files to/from the workspace's remote
+// hosts. Off until the user opts into SFTP access in Settings.
+let sftpControlEnabled = false;
+export function setAgentSftpControlEnabled(enabled: boolean): void {
+  sftpControlEnabled = enabled;
+}
+// Read accessor for the SFTP bridge's hard-refuse gate — same reasoning as the
+// SQL one: /sftp reuses the SHARED agent token, so env-injection gating alone
+// would not stop an agent that holds it from POSTing.
+export function isAgentSftpControlEnabled(): boolean {
+  return sftpControlEnabled;
+}
+
+// Sub-sub-gate (only matters while sftpControlEnabled): permission to WRITE —
+// upload, sync, mkdir/rename/delete on the remote. Reading (list/stat/cat) and
+// pulling files down stay available without it. Exposed to the shell as the
+// SPLITGRID_SFTP_WRITE=1 capability hint; real enforcement is the per-command
+// `writeAllowed` the bridge reads here on every call.
+let sftpWriteEnabled = false;
+export function setAgentSftpWriteEnabled(enabled: boolean): void {
+  sftpWriteEnabled = enabled;
+}
+export function isAgentSftpWriteEnabled(): boolean {
+  return sftpWriteEnabled;
 }
 
 // TEMP diagnostics for the WSL terminal crash: trace the spawn intent + outcome
@@ -1076,6 +1103,18 @@ export class LocalShellManager {
           if (sqlWriteEnabled) baseEnv.SPLITGRID_SQL_WRITE = '1';
         }
 
+        // Agent SFTP access: this terminal's agent can move files between the
+        // machine and the workspace's remote hosts (sync targets + the hosts of
+        // its SSH panes) via the bundled helper. Same per-run secret as the other
+        // bridges. Gated on its own sub-opt-in; SPLITGRID_SFTP_WRITE is the
+        // read-only vs upload hint, enforced per-command in the bridge.
+        if (sftpControlEnabled) {
+          baseEnv.SPLITGRID_SFTP_ENDPOINT = `http://127.0.0.1:${RECEIVER_PORT}/sftp`;
+          baseEnv.SPLITGRID_SFTP_CLI = sftpHelperPath(isWsl);
+          baseEnv.SPLITGRID_SFTP_TOKEN = BROWSER_TOKEN;
+          if (sftpWriteEnabled) baseEnv.SPLITGRID_SFTP_WRITE = '1';
+        }
+
         // WSL terminals: env doesn't cross the Win32→Linux boundary unless listed
         // in WSLENV. /u shares Win→WSL only; /p path-translates the helper scripts
         // (C:\…\splitgrid-*.sh → /mnt/c/…). The .sh helpers themselves rewrite the
@@ -1109,6 +1148,13 @@ export class LocalShellManager {
               'SPLITGRID_SQL_CLI/up',
               'SPLITGRID_SQL_TOKEN/u',
               ...(sqlWriteEnabled ? ['SPLITGRID_SQL_WRITE/u'] : []),
+            ] : []),
+            // Same for the SFTP vars — only when that sub-opt-in is on.
+            ...(sftpControlEnabled ? [
+              'SPLITGRID_SFTP_ENDPOINT/u',
+              'SPLITGRID_SFTP_CLI/up',
+              'SPLITGRID_SFTP_TOKEN/u',
+              ...(sftpWriteEnabled ? ['SPLITGRID_SFTP_WRITE/u'] : []),
             ] : []),
             'SPLITGRID_BRIDGE_DIR/up',
           ];

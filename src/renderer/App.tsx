@@ -25,6 +25,7 @@ import type { Container, IDEContainerState, Workspace, WorkspaceSyncConfig, Work
 import { useBrowserAgentBridge } from './hooks/useBrowserAgentBridge';
 import { useTerminalAgentBridge } from './hooks/useTerminalAgentBridge';
 import { useSqlAgentBridge } from './hooks/useSqlAgentBridge';
+import { useSftpAgentBridge } from './hooks/useSftpAgentBridge';
 import { setCommandListener } from './utils/commandCapture';
 
 // After an automatic reconnect, ignore further drops on the same container for
@@ -91,6 +92,14 @@ const App: React.FC = () => {
   useSqlAgentBridge({
     workspaces: workspace.workspaces,
     createContainer: workspace.createBrowserContainer, // content-agnostic creator
+  });
+  // Agent SFTP access: an agent in a splitgrid terminal can move files between
+  // this machine and its workspace's remote hosts (sync targets + the hosts of
+  // its SSH panes) via the bundled splitgrid-sftp helper — instead of base64-ing
+  // files through a shell or standing up a web server to get them across.
+  useSftpAgentBridge({
+    workspaces: workspace.workspaces,
+    savedConnections: terminals.savedConnections,
   });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showResources, setShowResources] = useState(false);

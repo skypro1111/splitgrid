@@ -4,6 +4,7 @@ import { watch, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync,
 import { BROWSER_TOKEN, processBrowserCommand, flattenBridgeResult } from './agent-browser-bridge';
 import { processTerminalCommand, flattenTerminalResult } from './agent-terminal-bridge';
 import { processSqlCommand, flattenSqlResult } from './agent-sql-bridge';
+import { processSftpCommand, flattenSftpResult } from './agent-sftp-bridge';
 import { handleHookEvent } from './agent-activity-receiver';
 import { winPathToWsl } from './wsl-paths';
 
@@ -17,7 +18,7 @@ import { winPathToWsl } from './wsl-paths';
 // no IP churn.
 //
 // Protocol (under <userData>/wsl-bridge):
-//   req/<id>.json   {kind:'hook'|'browser'|'terminal'|'sql', terminal, token?, event?, argv?}
+//   req/<id>.json   {kind:'hook'|'browser'|'terminal'|'sql'|'sftp', terminal, token?, event?, argv?}
 //                   written atomically (…tmp → rename) so we never read a partial.
 //   res/<id>.json   the JSON reply (browser only); the helper reads then deletes.
 // We watch req/, dispatch, and for browser write res/<id>.json. Stale files are
@@ -109,6 +110,36 @@ async function processReqFile(name: string): Promise<void> {
       } else {
         const argv = Array.isArray(msg.argv) ? msg.argv.filter((a): a is string => typeof a === 'string') : [];
         body = flattenTerminalResult(await processTerminalCommand(terminal, argv));
+      }
+      const tmp = path.join(resDir, `.${id}.tmp`);
+      const fin = path.join(resDir, `${id}.json`);
+      try {
+        writeFileSync(tmp, JSON.stringify(body), 'utf8');
+        renameSync(tmp, fin);
+      } catch (err) {
+        safeUnlink(tmp);
+        console.error('[file-bridge] reply write failed:', (err as Error).message);
+      }
+      safeUnlink(reqPath);
+      return;
+    }
+
+    if (msg.kind === 'sftp') {
+      const id = name.slice(0, -'.json'.length);
+      let body: Record<string, unknown>;
+      if (msg.token !== BROWSER_TOKEN) {
+        body = { ok: false, error: 'unauthorized' };
+      } else {
+        const argv = Array.isArray(msg.argv) ? msg.argv.filter((a): a is string => typeof a === 'string') : [];
+        body = flattenSftpResult(await processSftpCommand(terminal, argv));
+        // The agent is inside the distro: any LOCAL path we hand back (a file it
+        // just pulled down) must be expressed as /mnt/… so it can open it.
+        for (const key of ['local', 'localDir'] as const) {
+          if (typeof body[key] === 'string') body[key] = winToWslPath(body[key] as string);
+        }
+        if (Array.isArray(body.locals)) {
+          body.locals = (body.locals as unknown[]).map((p) => (typeof p === 'string' ? winToWslPath(p) : p));
+        }
       }
       const tmp = path.join(resDir, `.${id}.tmp`);
       const fin = path.join(resDir, `${id}.json`);

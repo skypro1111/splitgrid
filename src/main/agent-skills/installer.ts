@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { browserSkillResourcePath, terminalSkillResourcePath, sqlSkillResourcePath } from '../agent-hooks/paths';
+import { browserSkillResourcePath, terminalSkillResourcePath, sqlSkillResourcePath, sftpSkillResourcePath } from '../agent-hooks/paths';
 
 // ─── Agent skill install ─────────────────────────────────────────────────────
 // Ships splitgrid's Claude Code skills into the agent's global skills dir so a
@@ -17,6 +17,7 @@ import { browserSkillResourcePath, terminalSkillResourcePath, sqlSkillResourcePa
 const BROWSER_SKILL = 'sg-browser';
 const TERMINAL_SKILL = 'sg-terminal';
 const SQL_SKILL = 'sg-sql';
+const SFTP_SKILL = 'sg-sftp';
 
 /** Claude's config dir: $CLAUDE_CONFIG_DIR if set, else ~/.claude. */
 function claudeConfigDir(): string {
@@ -60,11 +61,11 @@ function removeSkill(claudeDir: string, name: string): void {
 
 /**
  * Install (or refresh) the bundled skills into ~/.claude/skills. The browser
- * skill is always installed (master opt-in); the terminal and SQL skills are
- * each installed only when their sub-opt-in is on, and removed when it's off — so
- * toggling a sub-opt-in off cleans up after itself.
+ * skill is always installed (master opt-in); the terminal, SQL and SFTP skills
+ * are each installed only when their sub-opt-in is on, and removed when it's
+ * off — so toggling a sub-opt-in off cleans up after itself.
  */
-export function syncInstalledAgentSkills(terminalControl: boolean, sqlControl = false): void {
+export function syncInstalledAgentSkills(terminalControl: boolean, sqlControl = false, sftpControl = false): void {
   const claudeDir = claudeConfigDir();
   // Only install when Claude Code is actually present on this machine.
   if (!existsSync(claudeDir)) return;
@@ -78,6 +79,8 @@ export function syncInstalledAgentSkills(terminalControl: boolean, sqlControl = 
   else removeSkill(claudeDir, TERMINAL_SKILL);
   if (sqlControl) installSkill(claudeDir, SQL_SKILL, sqlSkillResourcePath());
   else removeSkill(claudeDir, SQL_SKILL);
+  if (sftpControl) installSkill(claudeDir, SFTP_SKILL, sftpSkillResourcePath());
+  else removeSkill(claudeDir, SFTP_SKILL);
 }
 
 /** Remove every bundled skill from ~/.claude/skills (only our own dirs). */
@@ -86,6 +89,7 @@ export function uninstallAgentSkills(): void {
   removeSkill(claudeDir, BROWSER_SKILL);
   removeSkill(claudeDir, TERMINAL_SKILL);
   removeSkill(claudeDir, SQL_SKILL);
+  removeSkill(claudeDir, SFTP_SKILL);
 }
 
 // Skill dir names this app shipped under previous names (the old product name

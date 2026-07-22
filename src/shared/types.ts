@@ -733,6 +733,16 @@ export interface AppSettings {
   // write/DDL (data modification, schema changes). Exposes SPLITGRID_SQL_WRITE=1
   // as a capability hint. Undefined/false → read-only.
   agentSqlWrite?: boolean;
+  // Sub-opt-in (only meaningful while agentIntegrations is on): lets an agent
+  // move files between this machine and the workspace's remote hosts over SFTP
+  // (its sync targets + the hosts of its SSH panes) — installs the splitgrid-sftp
+  // skill and injects the SPLITGRID_SFTP_* env. Read-only by default (list, stat,
+  // download). Undefined/false → no SFTP skill, no SFTP env.
+  agentSftpControl?: boolean;
+  // Sub-sub-opt-in (only meaningful while agentSftpControl is on): also allow
+  // WRITING to the remote — upload, sync, mkdir/rename/delete. Exposes
+  // SPLITGRID_SFTP_WRITE=1 as a capability hint. Undefined/false → read-only.
+  agentSftpWrite?: boolean;
   // Makes the mouse wheel scroll tmux/screen by enabling mouse mode in the local
   // ~/.tmux.conf and ~/.screenrc (a SplitGrid-managed block). Trade-off: text
   // selection then goes through the multiplexer (hold Shift for native select).
@@ -1220,6 +1230,17 @@ export interface ElectronAPI {
     callback: (payload: { reqId: string; terminal: string; argv: string[]; writeAllowed: boolean }) => void
   ): () => void;
   sendSqlResult(payload: {
+    reqId: string;
+    ok: boolean;
+    data?: Record<string, unknown>;
+    error?: string;
+  }): void;
+  // Agent SFTP access: subscribe to forwarded SFTP commands and reply with the
+  // result keyed by reqId. `writeAllowed` is read from main per command.
+  onSftpCommand(
+    callback: (payload: { reqId: string; terminal: string; argv: string[]; writeAllowed: boolean }) => void
+  ): () => void;
+  sendSftpResult(payload: {
     reqId: string;
     ok: boolean;
     data?: Record<string, unknown>;

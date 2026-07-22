@@ -80,6 +80,18 @@ export function sqlHelperPath(posix = false): string {
 }
 
 /**
+ * Absolute path to the OS-appropriate SFTP helper. Agents invoke this as
+ * `<path> <cmd> [args]` to move files between this machine and the workspace's
+ * remote hosts; it POSTs the argv (tagged with $SPLITGRID_TERMINAL +
+ * $SPLITGRID_SFTP_TOKEN) to splitgrid's /sftp endpoint. `posix` forces the .sh
+ * variant (WSL terminals run Linux even when the host is Windows).
+ */
+export function sftpHelperPath(posix = false): string {
+  const name = (!posix && process.platform === 'win32') ? 'splitgrid-sftp.cmd' : 'splitgrid-sftp.sh';
+  return path.join(resourcesDir(), name);
+}
+
+/**
  * Absolute path to the bundled <webview> focus-bridge preload. Loaded into every
  * browser guest page so a click (which never reaches the host window) posts a
  * host message to focus the owning pane.
@@ -113,4 +125,14 @@ export function terminalSkillResourcePath(): string {
  */
 export function sqlSkillResourcePath(): string {
   return path.join(resourcesDir(), 'skills', 'sg-sql', 'SKILL.md');
+}
+
+/**
+ * Absolute path to the bundled Claude Code skill that teaches an agent how to
+ * move files to/from the workspace's remote hosts via $SPLITGRID_SFTP_CLI.
+ * Installed into the agent's ~/.claude/skills/ on startup (see
+ * agent-skills/installer).
+ */
+export function sftpSkillResourcePath(): string {
+  return path.join(resourcesDir(), 'skills', 'sg-sftp', 'SKILL.md');
 }

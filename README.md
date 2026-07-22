@@ -52,7 +52,9 @@ Cursor) across many sessions at once.
 - **Per-workspace notes & to-do list** — quick scratch notes and a lightweight
   task list attached to each workspace, edited from the sidebar.
 - **Workspace sync** — push files to remote targets over SFTP (with
-  `.gitignore` awareness and an auto-sync watcher).
+  `.gitignore` awareness and an auto-sync watcher). An agent in a terminal can
+  drive the same transfers (upload, download, sync) through a bridge, so it
+  never has to base64 a file through a shell to move it.
 - **Freeze / unfreeze** — suspend a background workspace's local process trees
   (`SIGSTOP`) to stop them burning CPU; resume on demand (macOS/Linux).
 - **Notifications** — play a sound when a terminal finishes in the background or

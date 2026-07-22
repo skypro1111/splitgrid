@@ -24,6 +24,7 @@ import { detectWslDistros, wslHostInterfaceIp } from './main/wsl';
 import { startBrowserBridge } from './main/agent-browser-bridge';
 import { startTerminalBridge } from './main/agent-terminal-bridge';
 import { startSqlBridge } from './main/agent-sql-bridge';
+import { startSftpBridge } from './main/agent-sftp-bridge';
 import { startFileBridge } from './main/agent-file-bridge';
 import { initAgentIntegrations, migrateLegacyAgentArtifacts } from './main/agent-integrations';
 import { AppSettingsStore } from './main/app-settings-store';
@@ -449,6 +450,7 @@ app.on('ready', () => {
   // Agent SQL control: register the IPC result channel for the relay that lets an
   // agent query/inspect/export against the SQL component in its workspace.
   startSqlBridge();
+  startSftpBridge();
   // WSL file bridge: hooks/browser requests from inside a distro arrive as files
   // (the localhost receiver is unreachable across the NAT + Windows Firewall).
   startFileBridge();
@@ -465,6 +467,8 @@ app.on('ready', () => {
     persistedSettings.agentTerminalControl ?? false,
     persistedSettings.agentSqlControl ?? false,
     persistedSettings.agentSqlWrite ?? false,
+    persistedSettings.agentSftpControl ?? false,
+    persistedSettings.agentSftpWrite ?? false,
   );
 });
 

@@ -21,6 +21,7 @@ import { applyTerminalMouseConfig } from './terminal-mouse-config';
 import { setTerminalOwnerResolver } from './agent-terminal-bridge';
 import { setBrowserOwnerResolver } from './agent-browser-bridge';
 import { setSqlOwnerResolver } from './agent-sql-bridge';
+import { setSftpOwnerResolver } from './agent-sftp-bridge';
 import { knownHostsStore } from './known-hosts-store';
 import { QuickChatManager } from './quick-chat';
 import { QuickChatHistoryStore } from './quick-chat-history-store';
@@ -188,6 +189,7 @@ export function registerIPCHandlers(
   // Same routing for the agent SQL bridge: a /sql command targets the window
   // that owns the calling terminal, not whichever window is focused.
   setSqlOwnerResolver((terminalId) => sessionOwner.get(terminalId));
+  setSftpOwnerResolver((terminalId) => sessionOwner.get(terminalId));
 
   const sendToWebContents = (webContentsId: number, channel: string, ...args: unknown[]) => {
     const win = deps.getWindowByWebContentsId(webContentsId);
@@ -739,12 +741,16 @@ export function registerIPCHandlers(
     if (!!prev.agentIntegrations !== !!next.agentIntegrations ||
         !!prev.agentTerminalControl !== !!next.agentTerminalControl ||
         !!prev.agentSqlControl !== !!next.agentSqlControl ||
-        !!prev.agentSqlWrite !== !!next.agentSqlWrite) {
+        !!prev.agentSqlWrite !== !!next.agentSqlWrite ||
+        !!prev.agentSftpControl !== !!next.agentSftpControl ||
+        !!prev.agentSftpWrite !== !!next.agentSftpWrite) {
       applyAgentIntegrations(
         !!next.agentIntegrations,
         !!next.agentTerminalControl,
         !!next.agentSqlControl,
         !!next.agentSqlWrite,
+        !!next.agentSftpControl,
+        !!next.agentSftpWrite,
       );
     }
     // Write/remove the managed mouse-mode block in ~/.tmux.conf & ~/.screenrc when

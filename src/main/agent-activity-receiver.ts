@@ -3,6 +3,7 @@ import { BrowserWindow, ipcMain } from 'electron';
 import { handleBrowserRequest } from './agent-browser-bridge';
 import { handleTerminalRequest } from './agent-terminal-bridge';
 import { handleSqlRequest } from './agent-sql-bridge';
+import { handleSftpRequest } from './agent-sftp-bridge';
 
 // ─── Agent activity receiver ─────────────────────────────────────────────────
 // Agents launched inside a splitgrid terminal report their turn lifecycle by
@@ -116,6 +117,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     // Agent SQL control (query/inspect/export the SQL component) shares it too.
     if ((req.url || '').startsWith('/sql')) {
       await handleSqlRequest(raw, res);
+      return;
+    }
+    // Agent SFTP access (move files to/from the workspace's remote hosts) too.
+    if ((req.url || '').startsWith('/sftp')) {
+      await handleSftpRequest(raw, res);
       return;
     }
     if ((req.url || '').startsWith('/hook')) {
