@@ -1,7 +1,7 @@
 {
   "name": "splitgrid",
   "productName": "SplitGrid",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "description": "Workspace terminal manager with drag-and-drop grid layout",
   "main": ".vite/build/main.js",
   "private": true,
