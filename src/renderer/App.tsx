@@ -307,7 +307,11 @@ const App: React.FC = () => {
   // Paste a saved/recent command into the focused terminal of the active
   // workspace (execute=true also presses Enter). Falls back to the first
   // terminal in the workspace when nothing terminal-like is focused.
-  const runCommandInTerminal = useCallback((command: string, execute: boolean) => {
+  //
+  // `imagePaths` (screenshots pasted into a todo) are appended as shell-quoted
+  // paths — the same convention as dragging an image onto the terminal, which is
+  // how the agent CLIs pick a picture up.
+  const runCommandInTerminal = useCallback((command: string, execute: boolean, imagePaths?: string[]) => {
     const active = workspace.activeWorkspace;
     if (!active) return;
     const isTerm = (c: Container) => c.content.type === 'terminal' && !!c.content.terminalId;
@@ -315,8 +319,23 @@ const App: React.FC = () => {
     const target = focused ?? active.containers.find(isTerm);
     const terminalId = target?.content.terminalId;
     if (!terminalId) return;
-    terminals.sendData(terminalId, execute ? `${command}\n` : command);
-  }, [workspace.activeWorkspace, terminals]);
+
+    const send = (text: string) => terminals.sendData(terminalId, execute ? `${text}\n` : text);
+    const session = terminals.sessions.find((s) => s.id === terminalId);
+    // A local file path means nothing to a remote shell, so SSH sessions get the
+    // text alone; a WSL session gets the /mnt/<drive>/… form of the path.
+    if (!imagePaths?.length || session?.type === 'ssh') {
+      send(command);
+      return;
+    }
+    void window.electronAPI
+      .todoImagePaths(imagePaths, session?.shell?.startsWith('wsl:') ? 'wsl' : null)
+      .then((paths) => {
+        const attached = paths.map(shellQuote).join(' ');
+        send(attached ? `${command} ${attached} ` : command);
+      })
+      .catch(() => send(command));
+  }, [workspace.activeWorkspace, terminals, shellQuote]);
 
   // Feed heuristically-captured terminal commands into the environment recent feed.
   useEffect(() => {

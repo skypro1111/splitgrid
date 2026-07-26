@@ -179,7 +179,8 @@ interface WorkspaceSidebarProps {
   recentCommands: RecentCommand[];
   envCommandFavorites: SavedCommand[];
   workspaceCommandFavorites: SavedCommand[];
-  onRunCommand: (command: string, execute: boolean) => void;
+  /** `imagePaths` attaches screenshots pasted into a todo to the pasted text. */
+  onRunCommand: (command: string, execute: boolean, imagePaths?: string[]) => void;
   onUpdateEnvCommandFavorites: (updater: (f: SavedCommand[]) => SavedCommand[]) => void;
   onUpdateWorkspaceCommandFavorites: (updater: (f: SavedCommand[]) => SavedCommand[]) => void;
   onRemoveRecentCommand: (command: string) => void;
@@ -840,7 +841,7 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                         workspace={ws}
                         onSetNotes={onSetWorkspaceNotes}
                         onUpdateTodos={onUpdateWorkspaceTodos}
-                        onRun={(text) => onRunCommand(text, false)}
+                        onRun={(text, imagePaths) => onRunCommand(text, false, imagePaths)}
                       />
                     </div>
                     {terminalRows.map((row) => renderSubrow(row, isActive, { showStatus: true }))}

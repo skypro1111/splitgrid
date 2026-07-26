@@ -62,8 +62,9 @@ interface Props {
   workspace: Workspace;
   onSetNotes: (id: string, notes: string) => void;
   onUpdateTodos: (id: string, updater: (todos: WorkspaceTodo[]) => WorkspaceTodo[]) => void;
-  /** Paste a todo's text into the focused terminal (no auto-run). */
-  onRun?: (text: string) => void;
+  /** Paste a todo's text — plus any images pasted into it — into the focused
+   * terminal (no auto-run). */
+  onRun?: (text: string, imagePaths: string[]) => void;
 }
 
 type Panel = 'notes' | 'todos';

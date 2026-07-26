@@ -607,8 +607,24 @@ export interface WorkspaceTodo {
   /** @deprecated Legacy completion flag for items persisted before `status`
    * existed; migrated to `status` on first read/edit. */
   done?: boolean;
+  /** Screenshots pasted into the item — kept until the item (or the image) is
+   * deleted, and handed to the agent along with the text on Run. */
+  images?: TodoImage[];
   createdAt: number;
 }
+
+/** An image pasted into a todo item. The bitmap itself lives on disk as a PNG
+ * under userData/todo-images (NOT in the temp dir — a todo can outlive a reboot);
+ * the item only stores the path, and the file is deleted with the item. */
+export interface TodoImage {
+  id: string;
+  /** Absolute local path of the stored PNG. */
+  path: string;
+  width?: number;
+  height?: number;
+  addedAt: number;
+}
+
 
 /** A reusable terminal command saved as a favorite. Bound either to a single
  * workspace (Workspace.commandFavorites) or the whole environment / workspace
@@ -1062,6 +1078,19 @@ export interface ElectronAPI {
   clipboardReadFilePaths(target?: 'wsl' | null): Promise<string[]>;
   clipboardWriteText(text: string): Promise<void>;
   clipboardReadText(): Promise<string>;
+  /** Store an image pasted into a todo item; null when the bytes aren't an image. */
+  todoSaveImage(bytes: Uint8Array): Promise<TodoImage | null>;
+  /** Store the image on the OS clipboard — the fallback for a paste event that
+   * carries no image file (null when the clipboard holds no bitmap). */
+  todoSaveClipboardImage(): Promise<TodoImage | null>;
+  /** Re-read a stored todo image as a data URL (null when the file is gone).
+   * `maxWidth` downscales — small for list thumbnails, large for the preview. */
+  todoImageData(path: string, maxWidth?: number): Promise<string | null>;
+  /** Delete stored todo images (paths outside the todo-image dir are ignored). */
+  todoDeleteImages(paths: string[]): Promise<void>;
+  /** Existing todo-image paths as the target session sees them (drops missing
+   * files; `target='wsl'` rewrites C:\… to /mnt/c/…). */
+  todoImagePaths(paths: string[], target?: 'wsl' | null): Promise<string[]>;
   /** Absolute path of a dropped/selected OS File (replaces removed File.path). */
   getPathForFile(file: File): string;
   /** Terminal shells available on this machine (for the Settings picker). */

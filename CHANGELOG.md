@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Screenshots in todos.** A task can now carry images: paste one into the add
+  input (or into a task while editing its text) and it is kept as a thumbnail on
+  the item — click to view it full size, hover for the × to drop just that image.
+  Text is optional, so a bare screenshot is a valid task.
+  - The bitmap is stored by the main process under `userData/todo-images`, not
+    the temp dir, so it survives a restart and lives exactly as long as the item:
+    deleting the task (or clearing completed) deletes its files, and images
+    pasted into a task that is never added are discarded with the draft.
+  - Works the same on macOS, Windows and Linux. A screenshot normally arrives in
+    the paste event, but where the platform hides the bitmap from it (some Linux
+    desktops, TIFF-only macOS pasteboards) the panel falls back to reading the OS
+    clipboard in the main process. PNG/JPEG are normalized to PNG; a WebP, GIF or
+    BMP — what copying an image out of a browser or file manager often yields on
+    Windows and Linux — is kept verbatim instead of being dropped.
+  - **Run** hands the agent the image paths along with the text, the same
+    shell-quoted-path convention as dragging an image onto the terminal. A WSL
+    pane gets the `/mnt/<drive>/…` form; an SSH pane gets the text alone, since a
+    local path means nothing to a remote shell.
+
 ## 1.1.0 — 2026-07-22
 
 ### Added

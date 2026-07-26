@@ -157,6 +157,15 @@ const api: ElectronAPI = {
     ipcRenderer.invoke('clipboard:read-file-paths', target ?? null),
   clipboardWriteText: (text: string) => ipcRenderer.invoke('clipboard:write-text', text),
   clipboardReadText: () => ipcRenderer.invoke('clipboard:read-text'),
+
+  // Images pasted into a todo item (stored in userData, not the temp dir).
+  todoSaveImage: (bytes: Uint8Array) => ipcRenderer.invoke('todo:save-image', bytes),
+  todoSaveClipboardImage: () => ipcRenderer.invoke('todo:save-clipboard-image'),
+  todoImageData: (filePath: string, maxWidth?: number) =>
+    ipcRenderer.invoke('todo:image-data', filePath, maxWidth),
+  todoDeleteImages: (paths: string[]) => ipcRenderer.invoke('todo:delete-images', paths),
+  todoImagePaths: (paths: string[], target?: 'wsl' | null) =>
+    ipcRenderer.invoke('todo:image-paths', paths, target ?? null),
   // Electron 32+ removed File.path; this is the supported way to resolve the
   // absolute path of a dropped/selected OS file (used by drag-and-drop).
   getPathForFile: (file: File) => webUtils.getPathForFile(file),

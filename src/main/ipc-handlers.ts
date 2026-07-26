@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, dialog, shell, clipboard } from 'electron';
+import { app, ipcMain, BrowserWindow, dialog, shell, clipboard, nativeImage } from 'electron';
 import { v4 as uuidv4 } from 'uuid';
 import { readdir, readFile, writeFile, stat, lstat, rename, mkdir, copyFile, cp, rm } from 'node:fs/promises';
 import { watch } from 'node:fs';
@@ -47,6 +47,7 @@ import type {
   SftpTarget,
   SftpTransferProgress,
   RemoteDirEntry,
+  TodoImage,
 } from '../shared/types';
 import { joinRemote } from '../shared/sftp-format';
 
@@ -2184,6 +2185,115 @@ export function registerIPCHandlers(
   ipcMain.handle('clipboard:read-text', async () => {
     return clipboard.readText();
   });
+
+  // --- Todo images ---
+  // A screenshot pasted into a todo has to survive as long as the todo does, so
+  // unlike a clipboard paste (temp dir, pruned after an hour) it is stored under
+  // userData and deleted only when the item — or the image — is removed.
+  const todoImagesDir = path.join(app.getPath('userData'), 'todo-images');
+
+  // Every path coming from the renderer is checked against that directory before
+  // it is read or unlinked, so a bad/stale path can never touch another file.
+  // Windows paths compare case-insensitively (C:\ and c:\ are the same file).
+  const insideTodoImages = (p: string): boolean => {
+    const fold = (s: string) => (process.platform === 'win32' ? s.toLowerCase() : s);
+    return fold(path.resolve(p)).startsWith(fold(path.resolve(todoImagesDir) + path.sep));
+  };
+
+  // What a pasted buffer actually is. nativeImage only decodes PNG/JPEG (plus
+  // TIFF on macOS), but Chromium renders far more, and copying an image out of a
+  // browser or a file manager routinely yields WebP or GIF — especially on Linux
+  // and Windows. Sniffing the header lets those through instead of dropping them.
+  const IMAGE_FORMATS: Array<{ ext: string; mime: string; matches: (b: Buffer) => boolean }> = [
+    { ext: 'png', mime: 'image/png', matches: (b) => b.length > 8 && b[0] === 0x89 && b.toString('latin1', 1, 4) === 'PNG' },
+    { ext: 'jpg', mime: 'image/jpeg', matches: (b) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 },
+    { ext: 'gif', mime: 'image/gif', matches: (b) => b.toString('latin1', 0, 3) === 'GIF' },
+    { ext: 'webp', mime: 'image/webp', matches: (b) => b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP' },
+    { ext: 'bmp', mime: 'image/bmp', matches: (b) => b.length > 2 && b.toString('latin1', 0, 2) === 'BM' },
+  ];
+
+  // Downscale to `maxWidth` (never upscale) and encode as a data URL — list
+  // thumbnails ask for a small one, the full-size preview for a big one. Formats
+  // nativeImage can't decode are handed to the renderer as-is; Chromium reads them.
+  const imageDataUrl = (buffer: Buffer, maxWidth: number): string | null => {
+    const image = nativeImage.createFromBuffer(buffer);
+    if (!image.isEmpty()) {
+      const { width } = image.getSize();
+      return (width > maxWidth ? image.resize({ width: maxWidth, quality: 'good' }) : image).toDataURL();
+    }
+    const mime = IMAGE_FORMATS.find((f) => f.matches(buffer))?.mime;
+    return mime ? `data:${mime};base64,${buffer.toString('base64')}` : null;
+  };
+
+  // Store one image and return the record the todo keeps. PNG/JPEG are decoded
+  // and re-encoded as PNG (normalizes whatever the platform pasted); a format
+  // nativeImage can't decode is written verbatim under its own extension, so a
+  // WebP stays a WebP and a GIF keeps its animation.
+  const storeTodoImage = async (buffer: Buffer): Promise<TodoImage | null> => {
+    if (buffer.length === 0) return null;
+    const decoded = nativeImage.createFromBuffer(buffer);
+    const sniffed = IMAGE_FORMATS.find((f) => f.matches(buffer));
+    if (decoded.isEmpty() && !sniffed) return null; // not an image at all
+
+    const bytes = decoded.isEmpty() ? buffer : decoded.toPNG();
+    if (!bytes || bytes.length === 0) return null;
+
+    await mkdir(todoImagesDir, { recursive: true });
+    const id = uuidv4();
+    const file = path.join(todoImagesDir, `${id}.${decoded.isEmpty() ? sniffed!.ext : 'png'}`);
+    await writeFile(file, bytes);
+
+    const { width, height } = decoded.isEmpty() ? { width: 0, height: 0 } : decoded.getSize();
+    return { id, path: file, width: width || undefined, height: height || undefined, addedAt: Date.now() };
+  };
+
+  ipcMain.handle(
+    'todo:save-image',
+    async (_e, bytes: Uint8Array | ArrayBuffer): Promise<TodoImage | null> =>
+      storeTodoImage(Buffer.from(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))),
+  );
+
+  // Fallback for when the renderer's paste event carries no image. Some Linux
+  // apps (and the macOS pasteboard's TIFF-only flavors) publish a bitmap that
+  // Chromium doesn't surface in DataTransfer, but Electron's clipboard reads it
+  // on all three platforms — this is what makes "copy screenshot → paste" behave
+  // the same everywhere.
+  ipcMain.handle('todo:save-clipboard-image', async (): Promise<TodoImage | null> => {
+    const image = clipboard.readImage();
+    if (image.isEmpty()) return null;
+    return storeTodoImage(image.toPNG());
+  });
+
+  ipcMain.handle(
+    'todo:image-data',
+    async (_e, filePath: string, maxWidth?: number): Promise<string | null> => {
+      if (!filePath || !insideTodoImages(filePath)) return null;
+      const buffer = await readFile(filePath).catch(() => null);
+      if (!buffer) return null; // file removed behind our back — caller drops the thumb
+      return imageDataUrl(buffer, maxWidth && maxWidth > 0 ? maxWidth : 160);
+    },
+  );
+
+  ipcMain.handle('todo:delete-images', async (_e, paths: string[]): Promise<void> => {
+    for (const p of paths ?? []) {
+      if (typeof p === 'string' && insideTodoImages(p)) await rm(p).catch(() => {});
+    }
+  });
+
+  // Paths as the target session sees them, for pasting into a terminal: missing
+  // files are dropped, and a WSL session gets /mnt/<drive>/… instead of C:\….
+  ipcMain.handle(
+    'todo:image-paths',
+    async (_e, paths: string[], target?: 'wsl' | null): Promise<string[]> => {
+      const out: string[] = [];
+      for (const p of paths ?? []) {
+        if (typeof p !== 'string' || !insideTodoImages(p)) continue;
+        if (!(await stat(p).catch(() => null))) continue;
+        out.push(target === 'wsl' ? toWslPath(p) : p);
+      }
+      return out;
+    },
+  );
 
   // --- API for main.ts ---
   return {
