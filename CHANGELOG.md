@@ -1,9 +1,30 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-10-29
 
 ### Added
 
+- **Git pane.** A native repository panel next to terminals, SFTP and SQL:
+  commit graph with lanes, branches/tags/remotes, worktrees, and the working
+  copy (stage, unstage, discard, commit) with a Monaco diff. It drives the real
+  `git` binary, so your config, hooks and credential helpers behave exactly as
+  in the terminal.
+- **Agents can drive a tab in your real browser** via the companion Chrome
+  extension (`extension/`, build with `npm run build:ext`, load unpacked). Pair
+  it from **Settings → Agent integrations**, then activate a tab; the agent sees
+  it as one more `sg-browser` target. Read-only by default — eval, navigation and
+  interaction need the separate write opt-in. Off unless enabled.
+- **Focus mode.** Expand one pane over the whole grid from its header (or the
+  hotkey) without touching the layout; everything else keeps running.
+- **Saved prompts.** A Prompts popover in the sidebar keeps reusable multi-line
+  prompts per environment: click to paste into the focused terminal, ▶ to run.
+- **SSH connection groups**, shared by Settings, the SSH connect pane and the
+  SFTP chooser, and kept in sync across environment windows.
+- **Window background colour** in Settings, clamped to a readable dark range.
+- **SQL pane keeps sessions warm.** Switching database or connection hands back
+  the open session instead of dropping it, so temp tables, `SET`s and open
+  transactions survive; the connection ▸ database ▸ schema picker always
+  targets the connection you chose.
 - **Screenshots in todos.** A task can now carry images: paste one into the add
   input (or into a task while editing its text) and it is kept as a thumbnail on
   the item — click to view it full size, hover for the × to drop just that image.
@@ -22,6 +43,49 @@
     shell-quoted-path convention as dragging an image onto the terminal. A WSL
     pane gets the `/mnt/<drive>/…` form; an SSH pane gets the text alone, since a
     local path means nothing to a remote shell.
+
+### Fixed
+
+- **Data loss.** Settings, workspaces, connections and known hosts are written
+  atomically, so a crash mid-write can no longer leave a truncated file that
+  loads as empty. Saved prompts and the Claude Code binary path are now actually
+  persisted. A keychain that is unavailable for one session no longer replaces
+  the key that encrypts saved passwords.
+- **SSH.** A dropped connection (Wi-Fi, sleep) now reconnects instead of closing
+  the pane; `exit` closes the connection instead of leaving it open on
+  keepalive; a server that hangs up during login no longer leaves the pane
+  stuck on "connecting". A terminal that fails to restore shows **Retry**
+  instead of retrying in a loop.
+- **Ghostty renderer.** `Ctrl+Shift+C` no longer also sends `^C` to the shell,
+  and accepting the saved-password offer no longer sends a stray Enter.
+  Terminals refit after a divider drag ends.
+- **IDE.** A failed save keeps the tab open (and says so) instead of discarding
+  the edits; text typed while a save is in flight stays unsaved; a reopened file
+  is read fresh from disk instead of a stale cached copy.
+- **SQL.** Dates and timestamps are shown as stored, not shifted by your time
+  zone; an edit that matches no row fails instead of reporting success; "truncate
+  then import" on MySQL can be rolled back; export file errors and server-side
+  disconnects no longer crash the app; wide-table imports respect the driver's
+  parameter limit.
+- **Git.** Stage/unstage/discard treat paths literally — discarding
+  `app/[id]/page.tsx` no longer touches `app/i/page.tsx`.
+- **SFTP.** Large transfers no longer time out after 60 s while progressing.
+- Closing a workspace stops its terminals; closing one window no longer stops
+  file watching and auto-sync in the others.
+
+### Security
+
+- Links in model output can no longer open `file://` URLs (which could launch a
+  local app).
+- The CLI helpers pass their token and payload to `curl` on stdin rather than on
+  the command line, where other local users could read them.
+
+### Performance
+
+- Dragging a divider no longer re-renders the whole window on every mouse move.
+- Process metrics are scanned once for all windows instead of once per window.
+- The WSL file bridge only runs on Windows, and `.splitgrid/workspace.json` is
+  rewritten only when that workspace changed (and is no longer SFTP-synced).
 
 ## 1.1.0 — 2026-07-22
 
