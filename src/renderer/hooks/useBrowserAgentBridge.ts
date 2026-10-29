@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { Workspace, ContainerContent } from '../../shared/types';
 import { getBrowser } from '../components/browserRegistry';
-import { parseArgv, MAX_WAIT_MS } from './browserArgv';
+import { parseArgv, MAX_WAIT_MS } from '../../shared/browser-argv';
 import { decideBrowserTarget } from './browserTargets';
 
 const BROWSER_PARTITION = 'persist:browser';
@@ -70,8 +70,9 @@ const HELP = {
   ],
 };
 
-// Default wait cap (the max + the parser live in ./browserArgv so they can be
-// unit-tested without React/the webview).
+// Default wait cap (the max + the parser live in ../../shared/browser-argv so
+// they can be unit-tested without React/the webview — and so the main process can
+// read --target without reaching into renderer code).
 const DEFAULT_WAIT_MS = 10_000;
 
 export function useBrowserAgentBridge(deps: BridgeDeps): void {

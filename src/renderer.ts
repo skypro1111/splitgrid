@@ -27,16 +27,28 @@ const renderBootError = (message: string) => {
 const isBenignError = (message: string): boolean =>
   /ResizeObserver loop (limit exceeded|completed with undelivered notifications)/i.test(message);
 
+// Whatever nukes the UI has to leave a trace: the boot-error screen disappears
+// on the next reload, and to the user this looked like the app crashing. Send it
+// to the main-process crash log before painting it.
+const reportFatal = (kind: string, message: string) => {
+  try {
+    window.electronAPI?.logRendererError?.(`${kind}: ${message}`);
+  } catch {
+    // Never let reporting an error raise another one.
+  }
+  renderBootError(message);
+};
+
 window.addEventListener('error', (event) => {
   const message = event.error instanceof Error ? event.error.stack ?? event.error.message : String(event.message);
   if (isBenignError(message) || isBenignError(String(event.message))) return;
-  renderBootError(message);
+  reportFatal('window.onerror', message);
 });
 
 window.addEventListener('unhandledrejection', (event) => {
   const reason = event.reason instanceof Error ? event.reason.stack ?? event.reason.message : String(event.reason);
   if (isBenignError(reason)) return;
-  renderBootError(reason);
+  reportFatal('unhandledrejection', reason);
 });
 
 const root = document.getElementById('root');

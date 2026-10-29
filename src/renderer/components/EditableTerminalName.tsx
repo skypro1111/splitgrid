@@ -39,6 +39,8 @@ export const EditableTerminalName: React.FC<EditableTerminalNameProps> = ({ cust
         onBlur={finish}
         onKeyDown={(e) => {
           e.stopPropagation();
+          // IME: the Enter that commits a composition candidate isn't a save.
+          if (e.nativeEvent.isComposing) return;
           if (e.key === 'Enter') { e.preventDefault(); finish(); }
           else if (e.key === 'Escape') { e.preventDefault(); setEditing(false); }
         }}

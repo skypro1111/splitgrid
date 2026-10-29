@@ -17,6 +17,9 @@ type LoadState =
   | { kind: 'binary' }
   | { kind: 'ready' };
 
+// Suffix that keeps every editor's model uri distinct (see the mount effect).
+let modelSeq = 0;
+
 function remoteBasename(p: string): string {
   const trimmed = p.replace(/\/+$/, '');
   const idx = trimmed.lastIndexOf('/');
@@ -83,8 +86,10 @@ export const RemoteFileEditor: React.FC<Props> = ({ target, path, onClose }) => 
     const model = monaco.editor.createModel(
       pendingContentRef.current,
       detectLanguage(path),
-      // Unique in-memory uri per remote path avoids collisions with other models.
-      monaco.Uri.parse(`inmemory://sftp/${encodeURIComponent(path)}`),
+      // Unique per editor instance, not just per path: two panes (or two hosts)
+      // editing the same remote path would otherwise collide, and createModel
+      // throws on a duplicate uri.
+      monaco.Uri.parse(`inmemory://sftp/${++modelSeq}/${encodeURIComponent(path)}`),
     );
     modelRef.current = model;
     baselineRef.current = model.getAlternativeVersionId();

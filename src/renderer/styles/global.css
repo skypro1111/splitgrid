@@ -958,7 +958,7 @@ input::placeholder {
 .dg-header-stack { position: sticky; top: 0; z-index: 3; }
 .dg-filter-row {
   display: flex;
-  background: #181818;
+  background: var(--bg-editor);
   border-bottom: 1px solid var(--border);
 }
 .dg-filter-cell {
@@ -973,7 +973,7 @@ input::placeholder {
   position: sticky;
   left: 0;
   z-index: 2;
-  background: #181818;
+  background: var(--bg-editor);
   border-right: 1px solid var(--border);
   justify-content: center;
   padding: 0;
@@ -1033,20 +1033,20 @@ input::placeholder {
 .dg-overlay {
   position: absolute; inset: 0; z-index: 10;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(20, 20, 20, 0.5);
+  background: color-mix(in srgb, var(--bg-primary) 50%, transparent);
   color: var(--text-muted); font-size: 12px;
 }
 
 .dg-header {
   position: sticky; top: 0; z-index: 3;
   display: flex;
-  background: #1e1e1e;
+  background: var(--bg-input);
 }
 .dg-th {
   position: relative;
   display: flex; align-items: center; gap: 4px;
   padding: 5px 8px;
-  background: #1e1e1e;
+  background: var(--bg-input);
   color: var(--text-primary);
   font-weight: 600;
   border-bottom: 1px solid var(--border);
@@ -1069,9 +1069,9 @@ input::placeholder {
   text-align: right; justify-content: flex-end;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
-  background: #181818;
+  background: var(--bg-editor);
 }
-.dg-row-num-head { background: #1e1e1e; z-index: 4; }
+.dg-row-num-head { background: var(--bg-input); z-index: 4; }
 .dg-row-num-sel-able:hover { color: var(--text-primary); }
 /* Selected row gutter — stronger tint than the in-range cell fill */
 .dg-td.dg-row-num.dg-row-num-sel { background: rgba(34, 141, 242, 0.4); color: var(--text-primary); }
@@ -1984,3 +1984,29 @@ input::placeholder {
 .qc-md th, .qc-md td { border: 1px solid var(--border); padding: 4px 8px; }
 .qc-md img { max-width: 100%; height: auto; }
 .qc-md hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+
+/* Claude Code pane: indeterminate activity bar across the top of the composer.
+   The CLI reports no percentage (compaction and model turns have no total), so
+   an indeterminate sweep is the honest shape — it says "still working" without
+   inventing progress. */
+@keyframes agentActivitySweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
+.agent-activity-bar {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--border-subtle);
+}
+
+.agent-activity-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 33%;
+  background: currentColor;
+  animation: agentActivitySweep 1.15s ease-in-out infinite;
+}

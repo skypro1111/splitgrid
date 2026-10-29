@@ -22,6 +22,16 @@ const RELAY_BASE = (process.env.SPLITGRID_RELAY_URL || 'wss://stream.splitgrid.d
   .replace(/\/$/, '');
 const PRODUCER_URL = `${RELAY_BASE}/ws/producer`;
 const MAX_BACKOFF_MS = 30_000;
+// ws.send never refuses: on a slow uplink a fast-printing shared terminal would
+// queue output in main without bound. Past this many queued bytes, live output is
+// dropped and the session is re-synced (reset + current buffer) once it drains.
+const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
+// Ping cadence; a socket that hasn't answered by the next tick is half-open
+// (sleep/wake, network change) and is terminated so 'close' → reconnect runs.
+const HEARTBEAT_MS = 30_000;
+// RIS (full terminal reset), sent ahead of a re-sync so the relay's emulator and
+// the viewers redraw from the buffer instead of appending to a gappy screen.
+const TERMINAL_RESET = '\x1bc';
 
 // Wire shape sent to the relay (matches its SessionMeta).
 interface WireMeta {
@@ -43,6 +53,8 @@ let ws: WebSocket | null = null;
 let connecting = false;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let backoff = 1_000;
+// Shared sessions whose output was dropped while the socket was backed up.
+const resyncPending = new Set<string>();
 
 // Sink for keystrokes arriving from a web viewer. Wired by ipc-handlers (which
 // owns the terminal manager) to terminalManager.sendData. Null until wired.
@@ -65,6 +77,15 @@ export function relaySetBufferProvider(fn: (sessionId: string) => string | undef
 function seed(sessionId: string): void {
   const buf = bufferProvider?.(sessionId);
   if (buf) send({ t: 'data', id: sessionId, chunk: buf });
+}
+
+// Re-sync sessions that lost output to the cap, once the socket has drained.
+function flushResync(): void {
+  if (!isOpen() || ws!.bufferedAmount > MAX_BUFFERED_BYTES) return;
+  for (const id of resyncPending) {
+    if (shared.has(id)) send({ t: 'data', id, chunk: TERMINAL_RESET + (bufferProvider?.(id) ?? '') });
+  }
+  resyncPending.clear();
 }
 
 function isOpen(): boolean {
@@ -118,16 +139,29 @@ async function connect(): Promise<void> {
 
   const socket = new WebSocket(PRODUCER_URL, { headers: { Authorization: `Bearer ${token}` } });
   ws = socket;
+  let alive = true;
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
 
   socket.on('open', () => {
     backoff = 1_000;
+    // hello + seed below re-send every session's screen, which covers anything
+    // dropped on the previous socket.
+    resyncPending.clear();
+    heartbeat = setInterval(() => {
+      if (!alive) { socket.terminate(); return; }
+      alive = false;
+      try { socket.ping(); } catch { /* closing */ }
+      flushResync(); // a session that went quiet after an overflow
+    }, HEARTBEAT_MS);
     // Announce every currently-shared terminal so a fresh/reconnected relay
     // rebuilds the room from scratch, then seed each with its current screen.
     send({ t: 'hello', sessions: [...shared.values()] });
     for (const id of shared.keys()) seed(id);
     broadcastStatus();
   });
+  socket.on('pong', () => { alive = true; });
   socket.on('message', (raw: WebSocket.RawData) => {
+    alive = true;
     let msg: { t?: string; id?: unknown; data?: unknown };
     try {
       msg = JSON.parse(raw.toString());
@@ -143,6 +177,7 @@ async function connect(): Promise<void> {
     }
   });
   socket.on('close', () => {
+    if (heartbeat) clearInterval(heartbeat);
     if (ws === socket) ws = null;
     broadcastStatus();
     scheduleReconnect();
@@ -190,6 +225,7 @@ export function relaySetShare(sessionId: string, enabled: boolean, meta?: RelayS
     }
   } else {
     if (!shared.delete(sessionId)) return;
+    resyncPending.delete(sessionId);
     if (isOpen()) send({ t: 'close', id: sessionId });
     if (shared.size === 0) disconnect();
   }
@@ -200,6 +236,16 @@ export function relaySetShare(sessionId: string, enabled: boolean, meta?: RelayS
 // the session is shared and the socket is live.
 export function relayFeed(sessionId: string, chunk: string): void {
   if (!isOpen() || !shared.has(sessionId)) return;
+  if (ws!.bufferedAmount > MAX_BUFFERED_BYTES) {
+    resyncPending.add(sessionId);
+    return;
+  }
+  // Drained after an overflow: the buffer already holds this chunk, so the
+  // re-sync replaces it rather than following it.
+  if (resyncPending.has(sessionId)) {
+    flushResync();
+    return;
+  }
   send({ t: 'data', id: sessionId, chunk });
 }
 
@@ -214,6 +260,7 @@ export function relayResize(sessionId: string, cols: number, rows: number): void
 // A shared terminal closed — stop streaming it and tell the relay.
 export function relayDropSession(sessionId: string): void {
   if (!shared.delete(sessionId)) return;
+  resyncPending.delete(sessionId);
   if (isOpen()) send({ t: 'close', id: sessionId });
   if (shared.size === 0) disconnect();
   broadcastStatus();

@@ -2,11 +2,13 @@ import React, { useEffect, useRef } from 'react';
 import '../../monacoEnvironment';
 import * as monaco from 'monaco-editor';
 import { detectLanguage } from './utils';
+import { EDITOR_THEME } from '../../monacoTheme';
 
 interface Props {
   filePath: string | null;
   onDirtyChange: (filePath: string, dirty: boolean) => void;
-  onSave: (filePath: string, content: string) => void;
+  /** `versionId` is the model version `content` was taken from — the one to mark saved. */
+  onSave: (filePath: string, content: string, versionId: number) => void;
   fontSize?: number;
 }
 
@@ -60,7 +62,7 @@ function getOrCreateModel(filePath: string, content: string): monaco.editor.ITex
   return model;
 }
 
-export function disposeModel(filePath: string) {
+function disposeModel(filePath: string) {
   const model = modelCache.get(filePath);
   if (model && !model.isDisposed()) model.dispose();
   modelCache.delete(filePath);
@@ -68,17 +70,46 @@ export function disposeModel(filePath: string) {
   viewStateCache.delete(filePath);
 }
 
-export function getModelContent(filePath: string): string | null {
+// Which IDE panes (by owner id) have a tab open on each file. Models are shared
+// across panes — one per path — so a pane dropping its tab only disposes the
+// model once no other pane still has that file open. A pane that merely
+// unmounts (workspace switch) keeps its claims, so its models survive.
+const modelOwners = new Map<string, Set<string>>();
+
+export function retainModel(filePath: string, ownerId: string) {
+  let owners = modelOwners.get(filePath);
+  if (!owners) { owners = new Set(); modelOwners.set(filePath, owners); }
+  owners.add(ownerId);
+}
+
+/** Drop a pane's claim on a file; disposes the model when it was the last one. */
+export function releaseModel(filePath: string, ownerId: string) {
+  const owners = modelOwners.get(filePath);
+  owners?.delete(ownerId);
+  if (owners && owners.size > 0) return;
+  modelOwners.delete(filePath);
+  disposeModel(filePath);
+}
+
+export function getModelSnapshot(filePath: string): { content: string; versionId: number } | null {
   const model = modelCache.get(filePath);
-  if (model && !model.isDisposed()) return model.getValue();
+  if (model && !model.isDisposed()) {
+    return { content: model.getValue(), versionId: model.getAlternativeVersionId() };
+  }
   return null;
 }
 
-export function markModelSaved(filePath: string) {
+/**
+ * Record `versionId` — the version whose content was written — as the saved one.
+ * Not the model's current version: edits typed while the write was in flight
+ * are not on disk, and must stay dirty (and safe from reloadModelFromDisk).
+ * Returns whether the model is still dirty.
+ */
+export function markModelSaved(filePath: string, versionId: number): boolean {
   const model = modelCache.get(filePath);
-  if (model && !model.isDisposed()) {
-    savedVersions.set(filePath, model.getAlternativeVersionId());
-  }
+  if (!model || model.isDisposed()) return false;
+  savedVersions.set(filePath, versionId);
+  return model.getAlternativeVersionId() !== versionId;
 }
 
 /**
@@ -111,32 +142,7 @@ export async function reloadModelFromDisk(filePath: string): Promise<boolean> {
   }
 }
 
-monaco.editor.defineTheme('splitgrid-dark', {
-  base: 'vs-dark',
-  inherit: true,
-  rules: [],
-  colors: {
-    'editor.background': '#181818',
-    'editor.lineHighlightBackground': '#262626',
-    'editor.selectionBackground': '#264f78',
-    'editorLineNumber.foreground': '#505050',
-    'editorLineNumber.activeForeground': '#D4D4D4',
-    'editorGutter.background': '#181818',
-    'editorWidget.background': '#1a1a1a',
-    'editorWidget.border': '#383838',
-    'editorSuggestWidget.background': '#1a1a1a',
-    'editorSuggestWidget.border': '#383838',
-    'editorHoverWidget.background': '#1a1a1a',
-    'editorHoverWidget.border': '#383838',
-    'editorCursor.foreground': '#D4D4D4',
-    'editor.findMatchBackground': '#515c6a',
-    'editor.findMatchHighlightBackground': '#ea5c0055',
-    'minimap.background': '#181818',
-    'scrollbarSlider.background': '#67676750',
-    'scrollbarSlider.hoverBackground': '#676767',
-    'scrollbarSlider.activeBackground': '#676767',
-  },
-});
+// The shared Monaco theme registers itself on import (see renderer/monacoTheme).
 
 export const IDEEditor: React.FC<Props> = ({ filePath, onDirtyChange, onSave, fontSize = 13 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -168,7 +174,7 @@ export const IDEEditor: React.FC<Props> = ({ filePath, onDirtyChange, onSave, fo
     if (!containerRef.current || editorRef.current) return;
 
     const editor = monaco.editor.create(containerRef.current, {
-      theme: 'splitgrid-dark',
+      theme: EDITOR_THEME,
       fontSize: 13,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace",
       fontLigatures: true,
@@ -198,7 +204,7 @@ export const IDEEditor: React.FC<Props> = ({ filePath, onDirtyChange, onSave, fo
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       const model = editor.getModel();
       if (model && currentFileRef.current) {
-        onSaveRef.current(currentFileRef.current, model.getValue());
+        onSaveRef.current(currentFileRef.current, model.getValue(), model.getAlternativeVersionId());
       }
     });
 

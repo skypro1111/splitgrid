@@ -1,38 +1,14 @@
-import React, { useRef, useCallback, useEffect, useMemo, useState, useLayoutEffect, useContext, createContext } from 'react';
+import React, { useRef, useCallback, useEffect, useMemo, useState, useLayoutEffect, useContext } from 'react';
 import { PlusSquareIcon } from './Icons';
 import type { LayoutNode, SplitNode, SplitDirection, Container, QuickChatHotkey } from '../../shared/types';
 import { TEMP_DISABLE_INPUT_INTERCEPTS } from '../../shared/runtime-flags';
 import { defaultFocusModeHotkey, hotkeyMatchesInput } from '../../shared/quick-chat-hotkey';
 import { isCapturingHotkey } from '../hotkeyCapture';
+import { FocusModeContext, publishFocusMode, type GridRect } from './focusMode';
+import { pruneLayoutTree } from '../../shared/layout-tree';
 
 const MIN_RATIO = 0.1;
 const HANDLE_SIZE = 6;
-
-// --- Focus mode ---
-// Expands one container over the whole grid (visually overlaying the others)
-// WITHOUT touching the layout tree or reparenting any DOM: the chosen LeafCell is
-// simply lifted to `position: fixed` at the grid's rect, so terminals/IDE/browser
-// /SQL keep running untouched and exiting just clears the id. Transient (resets
-// when the grid remounts on workspace switch); never persisted.
-interface GridRect { top: number; left: number; width: number; height: number; }
-interface FocusModeValue {
-  focusModeId: string | null;
-  gridRect: GridRect | null;
-  toggle: (containerId: string) => void;
-}
-const FocusModeContext = createContext<FocusModeValue>({ focusModeId: null, gridRect: null, toggle: () => {} });
-
-// Tiny inline glyphs for the focus toggle (no matching entry in Icons.tsx).
-const ExpandGlyph: React.FC = () => (
-  <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5l-5 5M2.5 13.5l5-5" />
-  </svg>
-);
-const CompressGlyph: React.FC = () => (
-  <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <path d="M13.5 6.5h-4v-4M2.5 9.5h4v4M9.5 6.5l4-4M6.5 9.5l-4 4" />
-  </svg>
-);
 
 // Open/close animation for focus mode (expand the container + fade the backdrop).
 const FOCUS_ANIM_MS = 220;
@@ -100,7 +76,6 @@ function LeafCell({
   onDragStartRef.current = onDragStart;
   const focus = useContext(FocusModeContext);
   const isFocused = focus.focusModeId === containerId;
-  const [hovered, setHovered] = useState(false);
   const toggleRef = useRef(focus.toggle);
   toggleRef.current = focus.toggle;
 
@@ -165,8 +140,6 @@ function LeafCell({
       ref={cellRef}
       data-container-id={containerId}
       data-content-type={container.content.type}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{ ...focusStyle, '--container-font-size': `${zoomLevel}px` } as React.CSSProperties}
     >
       {renderContent(
@@ -178,26 +151,6 @@ function LeafCell({
       {/* Pulsing purple glow frame — only while focused. Its own compositing
           layer keeps it above the GPU canvas; the pulse is opacity-only (cheap). */}
       {isFocused && <div className="focus-mode-glow" aria-hidden="true" />}
-      {(hovered || isFocused) && (
-        <button
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); toggleRef.current(containerId); }}
-          title={isFocused ? 'Exit focus (⌘/Ctrl+Shift+F)' : 'Focus this container (⌘/Ctrl+Shift+F)'}
-          style={{
-            position: 'absolute', right: 8, bottom: 8, zIndex: 1002,
-            width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            borderRadius: 6, border: '1px solid var(--border)', cursor: 'pointer',
-            background: 'var(--bg-surface)', color: 'var(--text-secondary)',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.35)', opacity: 0.85,
-            // Own compositing layer so it stays above a terminal's GPU canvas.
-            transform: 'translateZ(0)',
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = 'var(--text-primary)'; }}
-          onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
-        >
-          {isFocused ? <CompressGlyph /> : <ExpandGlyph />}
-        </button>
-      )}
     </div>
   );
 }
@@ -399,6 +352,9 @@ export const WorkspaceGrid: React.FC<WorkspaceGridProps> = ({
   const gridRootRef = useRef<HTMLDivElement | null>(null);
   const treeRef = useRef<LayoutNode | null>(tree);
   const dragRef = useRef<{ sourceId: string; overId: string | null } | null>(null);
+  // A splitter drag is live (see handleNodeChangeAndCommit) / its commit is owed.
+  const resizingRef = useRef(false);
+  const resizeCommitPendingRef = useRef(false);
   const lastInteractionInGridRef = useRef(false);
   const zoomLevelsRef = useRef(zoomLevels);
   zoomLevelsRef.current = zoomLevels;
@@ -605,7 +561,7 @@ export const WorkspaceGrid: React.FC<WorkspaceGridProps> = ({
   }, [toggleFocusOnActive]);
 
   // Sync tree from props when not interacting
-  if (!dragRef.current) treeRef.current = tree;
+  if (!dragRef.current && !resizingRef.current) treeRef.current = tree;
 
   const containerMap = new Map(containers.map((c) => [c.id, c]));
 
@@ -846,11 +802,31 @@ export const WorkspaceGrid: React.FC<WorkspaceGridProps> = ({
     };
   }, [handleDragStart, toggleFocus]);
 
+  // While a splitter drag is live, only this grid re-renders per mousemove;
+  // the tree is committed to workspace state once, on mouseup. Committing every
+  // move re-rendered the whole app (every portal, sidebar, every grid cell) and
+  // kept resetting the save debounce.
+  useEffect(() => {
+    const onResizeActive = (e: Event) => {
+      const active = !!(e as CustomEvent<{ active?: boolean }>).detail?.active;
+      resizingRef.current = active;
+      if (!active && resizeCommitPendingRef.current && treeRef.current) {
+        resizeCommitPendingRef.current = false;
+        onTreeChangeRef.current(treeRef.current);
+      }
+    };
+    window.addEventListener('splitgrid:resize-active', onResizeActive);
+    return () => window.removeEventListener('splitgrid:resize-active', onResizeActive);
+  }, []);
+
   const handleNodeChangeAndCommit = useCallback(
     (newTree: LayoutNode) => {
       treeRef.current = newTree;
       rerender((n) => n + 1);
-      // Debounce commit (the last update before mouseup will be committed)
+      if (resizingRef.current) {
+        resizeCommitPendingRef.current = true;
+        return;
+      }
       onTreeChangeRef.current(newTree);
     },
     []
@@ -896,7 +872,21 @@ export const WorkspaceGrid: React.FC<WorkspaceGridProps> = ({
     return () => window.removeEventListener('focusin', handler, true);
   }, [handleContainerFocus]);
 
-  const currentTree = treeRef.current;
+  // Mirror focus state into the module store so portalled panes (terminal,
+  // browser, IDE) can drive the toggle from their headers — they render at the
+  // App root, outside this provider. Must stay above the empty-state return
+  // below: skipping it on an empty workspace changes the hook count and React
+  // throws "Rendered more hooks than during the previous render" the moment the
+  // first container appears.
+  useEffect(() => {
+    publishFocusMode({ focusModeId, gridRect, toggle: toggleFocus });
+  }, [focusModeId, gridRect, toggleFocus]);
+
+  // Render-time safety net: a leaf whose container is gone draws nothing yet
+  // still holds its slice of the grid, so a tree made only of such leaves would
+  // show a blank, un-splittable workspace instead of the empty state. Prune for
+  // display; the persisted tree is repaired on load (see useWorkspace).
+  const currentTree = pruneLayoutTree(treeRef.current, (id) => containerMap.has(id));
 
   // --- Empty state ---
   if (!currentTree) {

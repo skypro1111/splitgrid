@@ -1131,7 +1131,10 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
               </button>
               <button
                 onClick={async () => {
-                  const dir = await window.electronAPI.selectDirectory();
+                  const dir = await window.electronAPI.selectDirectory({
+                    title: 'Open Workspace Folder',
+                    buttonLabel: 'Open',
+                  });
                   if (dir) {
                     const parts = dir.split('/').filter(Boolean);
                     const name = parts[parts.length - 1] || `Workspace ${workspaces.length + 1}`;

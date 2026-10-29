@@ -10,6 +10,7 @@
     "package": "electron-forge package",
     "make": "electron-forge make",
     "publish": "electron-forge publish",
+    "build:ext": "node extension/build.mjs",
     "lint": "eslint --ext .ts,.tsx .",
     "typecheck": "tsc --noEmit --skipLibCheck",
     "test": "vitest run",
@@ -39,6 +40,7 @@
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/chrome": "^0.2.5",
     "@types/electron-squirrel-startup": "^1.0.2",
     "@types/mssql": "^12.3.0",
     "@types/path-browserify": "^1.0.3",
@@ -62,6 +64,7 @@
     "vitest": "^2.1.9"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.234",
     "@tanstack/react-virtual": "^3.14.3",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-unicode11": "^0.9.0",

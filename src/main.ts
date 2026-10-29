@@ -1,18 +1,21 @@
 import { app, BrowserWindow, Menu, shell, dialog, clipboard, systemPreferences } from 'electron';
 import path from 'node:path';
-import { appendFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { crashLog, logSessionStart } from './main/crash-log';
+import { isRecoverableSshError } from './main/recoverable-errors';
 
-// TEMP crash diagnostics: capture any catchable main-process failure (e.g. while
+// Crash diagnostics: capture any catchable main-process failure (e.g. while
 // creating a WSL terminal) to ~/splitgrid-terminal-debug.log alongside the shell
-// manager's spawn trace. A native node-pty crash won't reach here.
-function crashDbg(msg: string): void {
-  try {
-    appendFileSync(path.join(homedir(), 'splitgrid-terminal-debug.log'), `[${new Date().toISOString()}] [main] ${msg}\n`);
-  } catch { /* best-effort */ }
-}
+// manager's spawn trace. A native node-pty crash won't reach here. See
+// main/crash-log.ts for how a crash is told apart from a clean quit.
+const crashDbg = (msg: string) => crashLog(msg);
+
+logSessionStart();
+
 process.on('unhandledRejection', (reason) => {
   crashDbg(`unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}`);
+});
+process.on('exit', (code) => {
+  crashDbg(`session end pid=${process.pid} exitCode=${code}`);
 });
 import started from 'electron-squirrel-startup';
 import { TerminalManager } from './main/terminal-manager';
@@ -27,7 +30,10 @@ import { startSqlBridge } from './main/agent-sql-bridge';
 import { startSftpBridge } from './main/agent-sftp-bridge';
 import { startFileBridge } from './main/agent-file-bridge';
 import { initAgentIntegrations, migrateLegacyAgentArtifacts } from './main/agent-integrations';
+import { configureAgentDiagnostics } from './main/agent/agent-diagnostics';
+import { claudeAgentManager } from './main/agent/claude-agent-manager';
 import { AppSettingsStore } from './main/app-settings-store';
+import { normalizeBackgroundColor } from './shared/background-theme';
 import { initWorkosAuth, handleDeepLinkArgv } from './main/workos-auth';
 import { migrateLegacyUserData } from './main/userdata-migration';
 import { TEMP_DISABLE_INPUT_INTERCEPTS } from './shared/runtime-flags';
@@ -54,19 +60,15 @@ if (!gotSingleInstanceLock) {
   app.quit();
 }
 
-// Prevent SSH/SFTP connection errors from crashing the entire app.
-// These are recoverable — the SFTPSyncManager will reconnect on next attempt.
+// Prevent SSH/SFTP connection errors from crashing the entire app — they are
+// recoverable per session (see main/recoverable-errors.ts for what counts).
 process.on('uncaughtException', (err) => {
-  const msg = err?.message ?? '';
-  crashDbg(`uncaughtException: ${err?.stack ?? msg}`);
-  if (
-    msg.includes('Connection terminated') ||
-    msg.includes('ECONNRESET') ||
-    msg.includes('EPIPE') ||
-    msg.includes('Channel open failure') ||
-    msg.includes('Keepalive timeout')
-  ) {
-    console.warn('[main] suppressed SSH error:', msg);
+  const recoverable = isRecoverableSshError(err);
+  // Log the VERDICT, not just the error: an entry that says "fatal" is the last
+  // line before the process dies, which is exactly what a crash report needs.
+  crashDbg(`uncaughtException (${recoverable ? 'suppressed, SSH' : 'FATAL'}): ${err?.stack ?? err?.message ?? String(err)}`);
+  if (recoverable) {
+    console.warn('[main] suppressed SSH error:', err?.message);
     return;
   }
   // Re-throw non-SSH errors so they surface normally
@@ -99,9 +101,14 @@ const focusWindow = (win: BrowserWindow) => {
 };
 
 const openEnvironmentPickerInFocusedWindow = () => {
-  const focused = BrowserWindow.getFocusedWindow();
-  if (focused && !focused.isDestroyed() && !focused.webContents.isDestroyed()) {
-    focused.webContents.send('environment:open-picker');
+  // No focused window (macOS: all minimized/hidden, menu bar still live) →
+  // reuse an existing one rather than opening a second window on the default
+  // environment, which would then race the first on the same state file.
+  const target = BrowserWindow.getFocusedWindow()
+    ?? BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+  if (target && !target.isDestroyed() && !target.webContents.isDestroyed()) {
+    focusWindow(target);
+    target.webContents.send('environment:open-picker');
     return;
   }
   const created = createWindow();
@@ -268,7 +275,9 @@ const createWindow = (setId = DEFAULT_WORKSPACE_SET_ID) => {
     //   • Windows: keep the native frame (WorkspaceBar is hidden there).
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : {}),
     ...(process.platform === 'linux' ? { frame: false } : {}),
-    backgroundColor: '#141414',
+    // The user's chosen app background, so the window paints in the right colour
+    // before the renderer boots instead of flashing the default one.
+    backgroundColor: normalizeBackgroundColor(new AppSettingsStore().get().backgroundColor),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       backgroundThrottling: false,
@@ -319,13 +328,21 @@ const createWindow = (setId = DEFAULT_WORKSPACE_SET_ID) => {
     }
   });
 
-  // Self-heal if renderer process exits unexpectedly.
+  // Self-heal if renderer process exits unexpectedly. The window silently
+  // reloading is what a user reports as "the app crashed", so log it — reason
+  // 'oom' / 'crashed' vs 'killed' is the first thing worth knowing.
   win.webContents.on('render-process-gone', (_event, details) => {
+    crashDbg(`render-process-gone reason=${details.reason} exitCode=${details.exitCode}`);
     console.error('[main] renderer process gone:', details.reason);
     if (!win.isDestroyed()) {
       win.reload();
     }
   });
+
+  // Unresponsive usually precedes a renderer kill; logging the pair tells a hang
+  // apart from an outright crash.
+  win.on('unresponsive', () => crashDbg('window unresponsive'));
+  win.on('responsive', () => crashDbg('window responsive again'));
 
   const safeSendToWindow = (channel: string, ...args: unknown[]) => {
     if (win.isDestroyed()) return;
@@ -422,10 +439,18 @@ app.on('ready', () => {
     isEnvironmentOpen: (environmentId) => !!findWindowByEnvironmentId(environmentId),
     addRecentEnvironmentPath: (filePath) => workspaceStore.addRecentEnvironmentPath(filePath),
     toEnvironmentRefFromPath: (filePath) => workspaceStore.toEnvironmentRefFromPath(filePath),
-    onRecentEnvironmentsChanged: () => refreshApplicationMenu(),
+    // Rebuild the menu AND tell every window, so pickers / cached names in other
+    // environments pick up a rename or delete.
+    onRecentEnvironmentsChanged: () => {
+      refreshApplicationMenu();
+      broadcastEnvironmentStateChanged();
+    },
     setEnvironmentName: (envId, name) => workspaceStore.setEnvironmentName(envId, name),
     deleteEnvironment: (envId) => workspaceStore.deleteEnvironment(envId),
   });
+  // Claude Code pane steps land in <userData>/agent-panes.log so a hung or
+  // crashed pane still leaves a trail to read (see the /agent bridge).
+  configureAgentDiagnostics(app.getPath('userData'));
   createWindow();
   startActivityReceiver();
   // If WSL distros are installed, add a receiver listener on the WSL vEthernet IP
@@ -453,7 +478,7 @@ app.on('ready', () => {
   startSftpBridge();
   // WSL file bridge: hooks/browser requests from inside a distro arrive as files
   // (the localhost receiver is unreachable across the NAT + Windows Firewall).
-  startFileBridge();
+  if (process.platform === 'win32') startFileBridge();
   // Web streaming auth: register the workos-auth:// protocol, the macOS deep-link
   // listener, and the auth IPC. Login is always initiated from the running app,
   // so the OAuth callback arrives here (open-url / second-instance) post-ready.
@@ -472,6 +497,12 @@ app.on('ready', () => {
   );
 });
 
+// A GPU or utility process dying takes the UI down with it on some machines and
+// leaves nothing in the main-process log otherwise.
+app.on('child-process-gone', (_event, details) => {
+  crashDbg(`child-process-gone type=${details.type} reason=${details.reason} exitCode=${details.exitCode}${details.name ? ` name=${details.name}` : ''}`);
+});
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
@@ -486,8 +517,12 @@ app.on('window-all-closed', () => {
 let quitConfirmed = false;
 app.on('before-quit', (event) => {
   if (quitConfirmed || BrowserWindow.getAllWindows().length === 0) {
+    crashDbg('quitting (user/app initiated)'); // pairs with `session end` below
     stopActivityReceiver();
     terminalManager.shutdownForAppExit();
+    // Agent panes are otherwise stopped only via the per-window `closed` path,
+    // which is fire-and-forget and can lose the race with process exit.
+    void claudeAgentManager.stopAll();
     ipcAPI?.closeAllSftpSessions();
     return;
   }

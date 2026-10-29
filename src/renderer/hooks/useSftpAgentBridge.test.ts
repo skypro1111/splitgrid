@@ -54,7 +54,7 @@ beforeEach(() => {
     runWorkspaceSyncNow: vi.fn(async () => ({ synced: 3, errors: 0 })),
   };
   (globalThis as unknown as { window: unknown }).window = { electronAPI: api };
-  (globalThis as unknown as { crypto: Crypto }).crypto ??= { randomUUID: () => 'uuid' } as Crypto;
+  (globalThis as unknown as { crypto: Crypto }).crypto ??= { randomUUID: () => 'uuid' } as unknown as Crypto;
 });
 
 const run = (argv: string[], opts: { ws?: Workspace; write?: boolean } = {}) =>

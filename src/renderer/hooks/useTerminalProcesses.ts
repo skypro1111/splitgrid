@@ -41,8 +41,19 @@ async function poll() {
     const snap = await window.electronAPI.getResourceSnapshot();
     lastSnapshot = snap;
     const now = Date.now();
+    const prevInfo = new Map(infoBySession);
     infoBySession.clear();
     for (const s of snap.sessions) {
+      // No metric at all (a real one always counts the root shell) means this
+      // poll's process scan failed — `ps` timing out under load, a WSL distro
+      // hiccup. Keep the last known info rather than reporting "no process":
+      // a blank foreground command makes every agent terminal lose its state for
+      // one poll, which used to re-fire Done on long-finished terminals.
+      const prev = prevInfo.get(s.id);
+      if (s.processCount === undefined && prev) {
+        infoBySession.set(s.id, prev);
+        continue;
+      }
       const cpu = typeof s.processCpuPercent === 'number' ? s.processCpuPercent : 0;
       infoBySession.set(s.id, {
         processCount: typeof s.processCount === 'number' ? s.processCount : 0,

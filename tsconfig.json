@@ -14,5 +14,8 @@
     "jsx": "react-jsx",
     "strict": true
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  // The browser extension has its own tsconfig (Chrome MV3 / ESM / DOM); these
+  // Electron settings would mis-compile it.
+  "exclude": ["extension"]
 }

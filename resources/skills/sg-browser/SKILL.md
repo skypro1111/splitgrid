@@ -114,7 +114,8 @@ Network (capture requests while reproducing a bug):
 
 Flags:
 - `--target <surface>` — pick a specific browser when you own more than one
-  (`surface` is the id returned by `open`/`list`)
+  (`surface` is the id returned by `open`/`list`; a `tab:…` id targets a tab in
+  the user's real browser — see below)
 - `--full` (screenshot) — capture the entire page, not just the viewport
 - `--timeout <ms>` — cap for the polling `wait` commands (default 10s, max 30s)
 
@@ -140,6 +141,22 @@ The browser you `open` becomes **yours** (bound to this terminal). Commands with
 no `--target` act on your browser. If you own more than one, the CLI returns
 `ambiguous_target` with the list — re-run with `--target <surface>`. It never
 silently picks the wrong one.
+
+## Tabs in the user's real browser
+
+If the user has installed the SplitGrid browser extension and **activated** a tab
+in it, that tab is a second kind of surface with a `tab:` id (`tab:c1.842`), and
+`list` shows it next to the panes (`"kind":"tab"`, plus `writable` — false means
+read-only, so `eval`/`open` will be refused). Pass it like any other target:
+`"$SPLITGRID_BROWSER_CLI" screenshot --target tab:c1.842`. Useful when the page
+needs the user's real session (logged-in app, extensions, their profile).
+
+Supported on a tab today: `open|navigate|goto` · `back` · `forward` · `reload` ·
+`get url|title|text|html` · `eval` · `screenshot [--full]` · `close` (hands the
+tab back to the user). Everything else — `snapshot`, `click`, `fill`, `find`,
+`wait`, `press`, `network`, `cookies`, `storage`, `pdf`, `is`, `set viewport` —
+is pane-only for now and returns `not_supported_on_tab`; drop `--target` to run
+it against a browser pane instead.
 
 ## Tips
 

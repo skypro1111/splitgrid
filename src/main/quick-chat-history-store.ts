@@ -1,7 +1,8 @@
 import { app } from 'electron';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { FastChatConversation, FastChatMessage } from '../shared/types';
+import { writeFileAtomicSync } from './atomic-write';
 
 const HISTORY_FILE = 'quick-chat-history.json';
 const DEFAULT_LIMIT = 20;
@@ -67,7 +68,7 @@ export class QuickChatHistoryStore {
   private write(conversations: FastChatConversation[]): void {
     const dir = path.dirname(this.filePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(this.filePath, JSON.stringify(conversations, null, 2), 'utf-8');
+    writeFileAtomicSync(this.filePath, JSON.stringify(conversations, null, 2));
   }
 
   private normalizeLimit(limit: number | undefined): number {

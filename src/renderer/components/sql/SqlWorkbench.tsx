@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { PaneFocusButton } from '../focusMode';
 import '../../monacoEnvironment';
 import * as monaco from 'monaco-editor';
 import { SplitHorizontalIcon, SplitVerticalIcon } from '../Icons';
@@ -16,8 +17,11 @@ import { ExportDialog, type ExportRequest, type ExportScopeInfo } from './dialog
 import { ImportDialog } from './dialogs/ImportDialog';
 import { useSplitter } from './hooks/useSplitter';
 import { getDialectCapabilities } from '../../../shared/dialects';
+import { EDITOR_THEME } from '../../monacoTheme';
 import { quoteIdent } from './sqlIdentifiers';
 import { splitSqlStatements, statementAtOffset, type SqlStatement } from './sqlStatements';
+import { makeObjectTabId, planContextPick, resolveSchema, resolveTargetDatabase } from './sqlContext';
+import { SqlSessionPool } from './sqlSessionPool';
 import { parseCsv, detectCsvDelimiter } from '../../../shared/sql-serialize';
 import {
   registerSqlWorkbench, unregisterSqlWorkbench,
@@ -43,7 +47,6 @@ import type {
 } from '../../../shared/types';
 
 const DEFAULT_QUERY = 'SELECT now();';
-const SQL_EDITOR_THEME = 'splitgrid-sql-dark';
 const MAX_HISTORY = 50;
 const DEFAULT_TREE_WIDTH = 280;
 const DEFAULT_EDITOR_HEIGHT = 220;
@@ -111,7 +114,6 @@ function parseErrorPosition(message: string): number | null {
 }
 
 function makeQueryTabId() { return `q-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`; }
-function makeTableTabId(schema: string, name: string) { return `t:${schema}.${name}`; }
 
 function parseAliasMap(sqlPrefix: string): Map<string, { schema: string; table: string }> {
   const aliasMap = new Map<string, { schema: string; table: string }>();
@@ -139,16 +141,9 @@ function emptyForm(): ConnectionFormValues {
   };
 }
 
-monaco.editor.defineTheme(SQL_EDITOR_THEME, {
-  base: 'vs-dark', inherit: true, rules: [],
-  colors: {
-    'editor.background': '#181818',
-    'editor.lineHighlightBackground': '#262626',
-    'editor.selectionBackground': '#264f78',
-    'editorLineNumber.foreground': '#505050',
-    'editorLineNumber.activeForeground': '#D4D4D4',
-  },
-});
+// The SQL editor shares the app's Monaco theme (renderer/monacoTheme): a theme
+// passed to monaco.editor.create() is applied globally, so a separate SQL theme
+// would repaint every other Monaco surface whenever this editor was created.
 
 export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
   containerId,
@@ -197,6 +192,29 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
   const [reconnectState, setReconnectState] = useState<ReconnectState>({ targetSavedId: null, attempt: 0, maxAttempts: 3 });
   const [failedConnectionIds, setFailedConnectionIds] = useState<Set<string>>(new Set());
   const [connError, setConnError] = useState('');
+  // Latest connect failure, readable synchronously (the agent bridge needs the
+  // reason immediately after an awaited connect, before state has re-rendered).
+  const lastConnErrorRef = useRef('');
+  // Bumped by every connect attempt; see handleConnectWithRetry.
+  const connectGenRef = useRef(0);
+
+  // Backend sessions stay open across UI switches: moving to another database or
+  // connection hands back the warm session instead of dropping this one and
+  // dialling a new one (which also threw away temp tables, SETs and open
+  // transactions). Sessions are closed only on an explicit disconnect/delete,
+  // on LRU eviction, or when the pane unmounts.
+  const poolRef = useRef<SqlSessionPool | null>(null);
+  if (!poolRef.current) {
+    poolRef.current = new SqlSessionPool({
+      connect: (savedId, database) => (database
+        ? window.electronAPI.sqlConnectSavedToDatabase(savedId, database)
+        : window.electronAPI.sqlConnectSaved(savedId)),
+      disconnect: (id) => window.electronAPI.sqlDisconnect(id),
+    });
+  }
+  const pool = poolRef.current;
+  // Closing the pane must not leave its sessions open on the server.
+  useEffect(() => () => { void poolRef.current?.closeAll(); }, []);
 
   /* ===== Export / Import dialogs ===== */
   const [exportDialog, setExportDialog] = useState<ExportScopeInfo | null>(null);
@@ -225,8 +243,11 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
   const [history, setHistory] = useState<SQLHistoryEntry[]>(initialState?.history ?? []);
   const [favorites, setFavorites] = useState<SQLFavoriteQuery[]>(initialState?.favorites ?? []);
   const [showHistory, setShowHistory] = useState(false);
-  const [selectedDatabase, setSelectedDatabase] = useState<string>(initialState?.database ?? 'postgres');
-  const [selectedSchema, setSelectedSchema] = useState<string>(initialState?.schema ?? 'public');
+  // No hard-wired 'postgres'/'public' fallbacks: an unset context must stay empty
+  // so connecting uses the SAVED connection's own database and that database's
+  // default schema, instead of re-using whatever this pane last had selected.
+  const [selectedDatabase, setSelectedDatabase] = useState<string>(initialState?.database ?? '');
+  const [selectedSchema, setSelectedSchema] = useState<string>(initialState?.schema ?? '');
   const tabRuntimesRef = useRef<Map<string, TabRuntime>>(new Map());
   // Last-executed statements per query tab, so Refresh re-runs exactly what
   // produced the currently-shown result (not whatever the editor now contains).
@@ -236,6 +257,8 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
   const [tablePks, setTablePks] = useState<Record<string, string[]>>({});
 
   const activeTab = useMemo(() => tabs.find((t) => t.id === activeTabId) ?? null, [tabs, activeTabId]);
+  const activeTabIdRef = useRef<string | null>(activeTabId);
+  useEffect(() => { activeTabIdRef.current = activeTabId; }, [activeTabId]);
 
   // The connection → database → schema → table path backing the result currently
   // shown on screen. Drives the tree highlight (table set only for table tabs).
@@ -266,8 +289,8 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
   // True only when the ACTIVE tab's connection is the currently-live one.
   // Gates query execution so a run never hits a stale/other connection.
   const activeConnLiveRef = useRef(false);
-  const selectedSchemaRef = useRef('public');
-  const selectedDatabaseRef = useRef('postgres'); // eslint-disable-line @typescript-eslint/no-unused-vars
+  const selectedSchemaRef = useRef('');
+  const selectedDatabaseRef = useRef(''); // eslint-disable-line @typescript-eslint/no-unused-vars
 
   const getRuntime = useCallback((tabId: string): TabRuntime => {
     let rt = tabRuntimesRef.current.get(tabId);
@@ -320,7 +343,7 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
   useEffect(() => {
     if (!schemas.length) return;
     if (schemas.some((s) => s.schema === selectedSchema)) return;
-    const fallback = schemas.find((s) => s.isDefault)?.schema ?? schemas[0]?.schema ?? 'public';
+    const fallback = schemas.find((s) => s.isDefault)?.schema ?? schemas[0]?.schema ?? '';
     setSelectedSchema(fallback);
   }, [schemas, selectedSchema]);
 
@@ -342,7 +365,7 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
   }, [tabs, selectedSavedId, selectedDatabase, selectedSchema]);
 
   const openTableTab = useCallback((schema: string, objectName: string, rowEstimate?: number) => {
-    const existingId = makeTableTabId(schema, objectName);
+    const existingId = makeObjectTabId('t', selectedSavedId, selectedDatabase, schema, objectName);
     const existing = tabs.find((t) => t.id === existingId);
     if (existing) {
       setActiveTabId(existingId);
@@ -394,25 +417,26 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
     setActiveTabId(null);
   }, []);
 
-  useEffect(() => {
-    if (!activeTabId) return;
-    setTabs((prev) =>
-      prev.map((tab) => {
-        if (tab.id !== activeTabId) return tab;
-        if (tab.type === 'query') {
-          return { ...tab, savedConnectionId: selectedSavedId, database: selectedDatabase, schema: selectedSchema };
-        }
-        return { ...tab, savedConnectionId: selectedSavedId, database: selectedDatabase };
-      })
-    );
-  }, [activeTabId, selectedSavedId, selectedDatabase, selectedSchema]);
+  // Re-point the active QUERY tab at the context the user just picked. Called
+  // from the connect/pick handlers rather than from an effect on the selection:
+  // that effect also fired when the selection was *pulled from* a tab on tab
+  // switch, writing the previous tab's database back over the new one.
+  // Table/structure tabs are deliberately untouched — they stay pinned to the
+  // connection + database they were opened from.
+  const applyContextToActiveTab = useCallback((
+    patch: { savedConnectionId?: string | null; database?: string; schema?: string },
+  ) => {
+    const id = activeTabIdRef.current;
+    if (!id) return;
+    setTabs((prev) => prev.map((tab) => (tab.id === id && tab.type === 'query' ? { ...tab, ...patch } : tab)));
+  }, []);
 
   /* ===== Monaco editor ===== */
   useEffect(() => {
     if (!editorHostRef.current || editorRef.current) return;
     const editor = monaco.editor.create(editorHostRef.current, {
       language: 'sql',
-      theme: SQL_EDITOR_THEME,
+      theme: EDITOR_THEME,
       automaticLayout: true,
       minimap: { enabled: false },
       fontSize: editorFontSize,
@@ -430,7 +454,15 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
     // Shift+Alt+F → format.
     editor.addCommand(monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, () => handleFormatRef.current());
     return () => { editor.dispose(); editorRef.current = null; };
-  }, [editorFontSize]);
+    // Created once: font size is applied by the effect below. Re-creating on zoom
+    // left the new editor on Monaco's own empty model, not the active tab's.
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Tab models are owned by this pane — dispose them with it.
+  useEffect(() => () => {
+    modelsRef.current.forEach((m) => m.dispose());
+    modelsRef.current.clear();
+  }, []);
 
   useEffect(() => {
     editorRef.current?.updateOptions({ fontSize: editorFontSize });
@@ -550,32 +582,67 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
     setSavedConnections(next);
     if (!selectedSavedId && next.length > 0) setSelectedSavedId(next[0].id);
   };
+  // Saved SQL connections are global: refetch when any pane/window changes them.
+  const refreshSavedRef = useRef(refreshSaved);
+  refreshSavedRef.current = refreshSaved;
+  useEffect(() => window.electronAPI.onSqlConnectionsChanged(() => {
+    refreshSavedRef.current().catch((e) => console.error('Failed to reload SQL connections:', e));
+  }), []);
 
-  const refreshSchemas = async (connectionId: string) => {
+  /**
+   * Reload the live tree for `connectionId` and resolve the schema selection
+   * against THAT database. `preferredSchema` (the user's pick, or the tab's own
+   * schema) wins only when it actually exists here; otherwise we fall back to
+   * this database's default. Carrying the previous selection over is what made
+   * switching database look like it had been ignored. Returns the schema chosen.
+   */
+  const loadTree = async (
+    connectionId: string,
+    preferredSchema?: string | null,
+    isStale?: () => boolean,
+  ): Promise<string> => {
     setLoadingSchemas(true);
+    let stale = false;
     try {
       const [s, d, c] = await Promise.all([
         window.electronAPI.sqlListSchemas(connectionId),
         window.electronAPI.sqlListDatabases(connectionId),
         window.electronAPI.sqlListColumns(connectionId),
       ]);
+      // A newer connect owns the tree now — don't paint this one over it.
+      if (isStale?.()) { stale = true; return preferredSchema ?? ''; }
       setSchemas(s); setDatabases(d); setColumns(c);
       const currentDb = d.find((db) => db.isCurrent)?.name;
-      if (currentDb) setSelectedDatabase(currentDb);
-      const defaultSchema = s.find((schema) => schema.isDefault)?.schema ?? s[0]?.schema;
-      if (defaultSchema) setSelectedSchema((prev) => prev || defaultSchema);
-    } catch (err) { setConnError((err as Error).message); }
-    finally { setLoadingSchemas(false); }
+      if (currentDb) { setSelectedDatabase(currentDb); selectedDatabaseRef.current = currentDb; }
+      const picked = resolveSchema(s, preferredSchema);
+      setSelectedSchema(picked);
+      // Kept in sync eagerly so callers can read the resolved schema before the
+      // state update has re-rendered.
+      selectedSchemaRef.current = picked;
+      return picked;
+    } finally { if (!stale) setLoadingSchemas(false); }
+  };
+
+  /** `loadTree` for callers that only want the error surfaced, not thrown. */
+  const refreshSchemas = async (connectionId: string, preferredSchema?: string | null): Promise<string> => {
+    try { return await loadTree(connectionId, preferredSchema); }
+    catch (err) { setConnError((err as Error).message); return preferredSchema ?? ''; }
   };
 
   const handleConnectWithRetry = useCallback(async (
     targetSavedId: string,
-    targetDatabase?: string | null
+    targetDatabase?: string | null,
+    targetSchema?: string | null
   ): Promise<SQLConnectionInfo | null> => {
     if (!targetSavedId) return null;
-    // Keep the currently-active connection alive as a fallback: only tear it
-    // down AFTER the new one connects. Otherwise a failed connect would leave us
-    // with nothing connected (looks like "switching killed my connection").
+    // Only the latest connect may touch pane state: a slow attempt (e.g. an
+    // unreachable host retrying) must not adopt — or, on failure, blank — the
+    // connection the user switched to meanwhile.
+    const gen = ++connectGenRef.current;
+    const superseded = () => gen !== connectGenRef.current;
+    // The previously-active session is never torn down here — it stays warm in
+    // the pool, so a failed switch leaves the pane exactly where it was and a
+    // switch back is instant.
     const previousConnId = connection?.id ?? null;
     setConnecting(true);
     setConnError('');
@@ -588,26 +655,42 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
     });
 
     for (let attempt = 1; attempt <= 3; attempt += 1) {
+      if (superseded()) return null;
       setReconnectState({ targetSavedId, attempt, maxAttempts: 3 });
       try {
-        const info = targetDatabase
-          ? await window.electronAPI.sqlConnectSavedToDatabase(targetSavedId, targetDatabase)
-          : await window.electronAPI.sqlConnectSaved(targetSavedId);
+        const { info, reused } = await pool.acquire(targetSavedId, targetDatabase ?? null);
+        if (superseded()) return null;
+        // Load the tree BEFORE adopting the session: on a warm session this
+        // doubles as the liveness probe, so a session the server has since
+        // dropped never becomes the pane's active connection.
+        let schema = targetSchema ?? '';
+        try {
+          schema = await loadTree(info.id, targetSchema ?? null, superseded);
+        } catch (err) {
+          if (reused) {
+            // Warm session is gone — discard it and let the retry loop dial a
+            // fresh one.
+            await pool.drop(info.id);
+            throw err;
+          }
+          // A brand-new session that simply cannot list its tree still counts as
+          // connected: surface the error, keep the connection.
+          if (superseded()) return null;
+          setConnError((err as Error).message);
+        }
+        if (superseded()) return null;
         setConnection(info);
         setConnectedSavedId(targetSavedId);
         setSelectedSavedId(targetSavedId);
         setSelectedDatabase(info.database);
+        pool.protect(info.id);
         expand(`conn:${targetSavedId}`);
-        // New connection is live — now safe to drop the previous one.
-        if (previousConnId && previousConnId !== info.id) {
-          await window.electronAPI.sqlDisconnect(previousConnId).catch(() => {});
-        }
-        await refreshSchemas(info.id);
-        setSelectedSchema((prev) => prev || 'public');
+        applyContextToActiveTab({ savedConnectionId: targetSavedId, database: info.database, schema });
         setReconnectState({ targetSavedId: null, attempt: 0, maxAttempts: 3 });
         setConnecting(false);
         return info;
       } catch (err) {
+        if (superseded()) return null;
         if (attempt === 3) {
           // Keep the previously-active connection (we never dropped it). Only
           // reset to a blank state when there was nothing to fall back to.
@@ -618,6 +701,7 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
             setDatabases([]);
             setColumns([]);
           }
+          lastConnErrorRef.current = (err as Error).message;
           setConnError((err as Error).message);
           setFailedConnectionIds((prev) => new Set(prev).add(targetSavedId));
           setReconnectState({ targetSavedId: null, attempt: 0, maxAttempts: 3 });
@@ -630,12 +714,49 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
     return null;
   }, [connection?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /**
+   * The one entry point for "connect this pane to (saved connection, database)".
+   * The database defaults to the TARGET connection's own saved database — never
+   * to whatever this pane happens to have selected, which is how connecting to a
+   * second server ended up opening (or failing on) the first server's database.
+   */
+  const connectSaved = useCallback(async (
+    savedId: string,
+    database?: string | null,
+    schema?: string | null,
+  ): Promise<SQLConnectionInfo | null> => {
+    if (!savedId) return null;
+    const saved = savedConnections.find((c) => c.id === savedId) ?? null;
+    const db = resolveTargetDatabase(database, saved?.database);
+    // The context is shown optimistically so the switch feels immediate; if it
+    // fails we put it back on the session we are still holding.
+    const previous = connection && connectedSavedId
+      ? { savedId: connectedSavedId, database: selectedDatabaseRef.current }
+      : null;
+    setSelectedSavedId(savedId);
+    setSelectedDatabase(db);
+    selectedDatabaseRef.current = db;
+    const gen = connectGenRef.current + 1; // the generation handleConnectWithRetry takes
+    const info = await handleConnectWithRetry(savedId, db || null, schema ?? null);
+    // Superseded by a newer connect — its context stands, don't roll back to ours.
+    if (gen !== connectGenRef.current) return null;
+    if (!info && previous) {
+      setSelectedSavedId(previous.savedId);
+      setSelectedDatabase(previous.database);
+      selectedDatabaseRef.current = previous.database;
+    }
+    return info;
+  }, [savedConnections, connection, connectedSavedId, handleConnectWithRetry]);
+
   // Load saved connections on mount, then auto-reconnect persisted savedConnectionId.
   useEffect(() => {
     void refreshSaved().then(() => {
       if (initialState?.savedConnectionId) {
-        void handleConnectWithRetry(initialState.savedConnectionId, initialState.database ?? null);
-        if (initialState.schema) setSelectedSchema(initialState.schema);
+        void handleConnectWithRetry(
+          initialState.savedConnectionId,
+          initialState.database ?? null,
+          initialState.schema ?? null,
+        );
       }
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -687,6 +808,16 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
         });
       }
       await refreshSaved();
+      // Warm sessions were dialled with the OLD host/user/database — drop them
+      // and re-dial if this connection is the one on screen.
+      if (editingConnectionId) {
+        const wasActive = connectedSavedId === saved.id;
+        await pool.dropSaved(saved.id);
+        if (wasActive) {
+          setConnection(null); setConnectedSavedId(null);
+          void handleConnectWithRetry(saved.id, selectedDatabaseRef.current || null, selectedSchemaRef.current || null);
+        }
+      }
       setSelectedSavedId(saved.id);
       setShowConnectionDialog(false);
       setEditingConnectionId(null);
@@ -697,8 +828,9 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
   const handleDeleteSelected = async (targetId: string | null = selectedSavedId) => {
     if (!targetId) return;
     try {
-      if (connectedSavedId === targetId && connection?.id) {
-        await window.electronAPI.sqlDisconnect(connection.id);
+      // Every warm session of this connection goes, not just the active one.
+      await pool.dropSaved(targetId);
+      if (connectedSavedId === targetId) {
         setConnection(null); setConnectedSavedId(null); setSchemas([]); setDatabases([]); setColumns([]);
       }
       await window.electronAPI.sqlDeleteConnection(targetId);
@@ -710,61 +842,57 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
 
   const handleConnectSelected = async (targetId: string | null = selectedSavedId) => {
     if (!targetId) { setConnError('Select connection'); return; }
-    await handleConnectWithRetry(targetId, selectedDatabase || null);
-    expand(`db:${targetId}:${selectedDatabase || 'postgres'}`);
-    expand(`schemas:${targetId}:${selectedDatabase || 'postgres'}`);
-    expand(`schema:${targetId}:${selectedDatabase || 'postgres'}:${selectedSchema || 'public'}`);
+    // Keep the picked database only when re-connecting the SAME connection;
+    // a different connection gets its own saved database (see connectSaved).
+    const keepDatabase = targetId === connectedSavedId ? selectedDatabase : null;
+    const info = await connectSaved(targetId, keepDatabase);
+    if (!info) return;
+    expand(`db:${targetId}:${info.database}`);
+    expand(`schemas:${targetId}:${info.database}`);
+    if (selectedSchemaRef.current) expand(`schema:${targetId}:${info.database}:${selectedSchemaRef.current}`);
   };
 
-  const handleConnectionSelect = useCallback(async (nextSavedId: string) => {
-    setSelectedSavedId(nextSavedId || null);
-    if (!nextSavedId) return;
-    const saved = savedConnections.find((c) => c.id === nextSavedId);
-    const db = saved?.database ?? selectedDatabase;
-    setSelectedDatabase(db);
-    await handleConnectWithRetry(nextSavedId, db);
-  }, [savedConnections, selectedDatabase, handleConnectWithRetry]);
-
-  const handleDatabaseSelect = useCallback(async (nextDatabase: string) => {
-    setSelectedDatabase(nextDatabase);
-    if (!selectedSavedId) return;
-    await handleConnectWithRetry(selectedSavedId, nextDatabase);
-  }, [selectedSavedId, handleConnectWithRetry]);
-
-  // Lazily list schemas for an arbitrary database (cascade submenu). Uses a
-  // throwaway connection to that db so the active connection is untouched.
+  // Lazily list schemas for an arbitrary database (cascade submenu). Goes
+  // through the pool, so the session it needs is kept warm: the active
+  // connection is untouched and actually picking that database is instant.
   const loadSchemasForDatabase = useCallback(async (db: string): Promise<string[]> => {
     if (db === selectedDatabase) return schemas.map((s) => s.schema);
     if (!selectedSavedId) return [];
-    let tempId: string | null = null;
     try {
-      const info = await window.electronAPI.sqlConnectSavedToDatabase(selectedSavedId, db);
-      tempId = info.id;
+      const { info } = await pool.acquire(selectedSavedId, db);
       const list = await window.electronAPI.sqlListSchemas(info.id);
       return list.map((s) => s.schema);
     } catch {
       return [];
-    } finally {
-      if (tempId) await window.electronAPI.sqlDisconnect(tempId).catch(() => {});
     }
-  }, [selectedSavedId, selectedDatabase, schemas]);
+  }, [selectedSavedId, selectedDatabase, schemas, pool]);
 
-  // Apply a (connection, database, schema) pick from the cascade. Reconnects
-  // only when the connection/database actually changes; empty parts keep current.
+  // Apply a (connection, database, schema) pick from the cascade in ONE connect.
+  // Switching connection used to connect twice (first to the saved database,
+  // then to the picked one), and the schema was applied after the reconnect had
+  // already reset it — so the pick appeared to be ignored.
   const pickContext = useCallback(async (connId: string, db: string, sch: string) => {
-    if (connId && connId !== selectedSavedId) {
-      await handleConnectionSelect(connId);
-      if (db) await handleDatabaseSelect(db);
-    } else if (db && db !== selectedDatabase) {
-      await handleDatabaseSelect(db);
+    const plan = planContextPick({ connectionId: connId, database: db, schema: sch }, {
+      selectedSavedId, connectedSavedId, connected: !!connection,
+      database: selectedDatabase, schema: selectedSchema,
+    });
+    if (plan.action === 'connect') {
+      await connectSaved(plan.savedId, plan.database, plan.schema);
+    } else if (plan.action === 'schema') {
+      setSelectedSchema(plan.schema);
+      selectedSchemaRef.current = plan.schema;
+      applyContextToActiveTab({ schema: plan.schema });
     }
-    if (sch) setSelectedSchema(sch);
-  }, [selectedSavedId, selectedDatabase, handleConnectionSelect, handleDatabaseSelect]);
+  }, [selectedSavedId, connectedSavedId, connection, selectedDatabase, selectedSchema, connectSaved, applyContextToActiveTab]);
 
+  // Disconnect closes every warm session of the active connection — otherwise a
+  // pooled session for one of its other databases would quietly stay open.
   const handleDisconnect = async () => {
-    if (!connection?.id) return;
+    const savedId = connectedSavedId;
+    if (!savedId) return;
     try {
-      await window.electronAPI.sqlDisconnect(connection.id);
+      pool.protect(null);
+      await pool.dropSaved(savedId);
       setConnection(null); setConnectedSavedId(null); setSchemas([]); setDatabases([]); setColumns([]);
     } catch (err) { setConnError((err as Error).message); }
   };
@@ -775,13 +903,15 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
 
   const ensureConnectionForTab = useCallback(async (tab: SQLTab): Promise<string | null> => {
     const targetSavedId = tab.savedConnectionId ?? selectedSavedId;
-    const targetDatabase = tab.database ?? selectedDatabase;
+    // `||` not `??`: an empty recorded database means "no preference", not "".
+    const targetDatabase = tab.database || selectedDatabase || '';
+    const targetSchema = tab.type === 'query' ? (tab.schema ?? null) : tab.schema;
     if (!targetSavedId) return null;
 
     const sameSaved = connectedSavedId === targetSavedId;
-    const sameDb = connection?.database === targetDatabase;
+    const sameDb = !targetDatabase || connection?.database === targetDatabase;
     if (!connection?.id || !sameSaved || !sameDb) {
-      const info = await handleConnectWithRetry(targetSavedId, targetDatabase);
+      const info = await handleConnectWithRetry(targetSavedId, targetDatabase || null, targetSchema);
       return info?.id ?? null;
     }
     return connection?.id ?? null;
@@ -1138,7 +1268,7 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
   // Reload the whole live tree (schemas/databases/columns) and drop the per-table
   // children cache — used by the connection/database/schema inline refresh buttons.
   const reloadTree = useCallback(() => {
-    if (connection?.id) void refreshSchemas(connection.id);
+    if (connection?.id) void refreshSchemas(connection.id, selectedSchemaRef.current);
     setTableChildren({});
   }, [connection?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1147,7 +1277,7 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
 
   /* ===== Object actions (DDL viewer / generate / rename / drop) ===== */
   const openStructureTab = useCallback((schema: string, objectName: string, kind: SQLSchemaObjectKind) => {
-    const id = `s:${schema}.${objectName}`;
+    const id = makeObjectTabId('s', selectedSavedId, selectedDatabase, schema, objectName);
     if (tabs.some((t) => t.id === id)) { setActiveTabId(id); return; }
     const tab: SQLStructureTab = {
       id, type: 'structure', title: `${objectName} (structure)`, schema, objectName, kind,
@@ -1191,7 +1321,7 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
   }, [openQueryTab, activeDialect, activeCaps.supportsSchemas]);
 
   const refreshAfterMutation = useCallback(async () => {
-    if (connection?.id) await refreshSchemas(connection.id);
+    if (connection?.id) await refreshSchemas(connection.id, selectedSchemaRef.current);
     setTableChildren({});
   }, [connection?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1279,36 +1409,46 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
   }, [activeTab, activeDialect]);
 
   /* ===== Persist state ===== */
+  // Debounced: every keystroke changes `tabs`, and each persist stringifies the
+  // whole pane (all queries + history). A pending write is flushed on unmount.
+  const pendingPersistRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (!onStateChange) return;
-    const payload: SQLContainerState = {
-      connectionId: connection?.id ?? null,
-      savedConnectionId: selectedSavedId,
-      connectionName: selectedConnection?.label ?? 'SQL',
-      host: selectedConnection?.host ?? '127.0.0.1',
-      port: selectedConnection?.port ?? 5432,
-      user: selectedConnection?.user ?? 'postgres',
-      database: selectedDatabase || selectedConnection?.database || 'postgres',
-      schema: selectedSchema || 'public',
-      ssl: selectedConnection?.ssl ?? false,
-      tabs: tabs.map((t) => {
-        if (t.type === 'query') {
-          const model = modelsRef.current.get(t.id);
-          return { ...t, query: model?.getValue() ?? t.query };
-        }
-        return t;
-      }),
-      activeTabId,
-      history,
-      favorites,
-      treeWidth: treeSplit.size,
-      editorHeight: editorSplit.size,
+    const flush = () => {
+      pendingPersistRef.current = null;
+      const payload: SQLContainerState = {
+        connectionId: connection?.id ?? null,
+        savedConnectionId: selectedSavedId,
+        connectionName: selectedConnection?.label ?? 'SQL',
+        host: selectedConnection?.host ?? '127.0.0.1',
+        port: selectedConnection?.port ?? 5432,
+        user: selectedConnection?.user ?? 'postgres',
+        database: selectedDatabase || selectedConnection?.database || '',
+        schema: selectedSchema || null,
+        ssl: selectedConnection?.ssl ?? false,
+        tabs: tabs.map((t) => {
+          if (t.type === 'query') {
+            const model = modelsRef.current.get(t.id);
+            return { ...t, query: model && !model.isDisposed() ? model.getValue() : t.query };
+          }
+          return t;
+        }),
+        activeTabId,
+        history,
+        favorites,
+        treeWidth: treeSplit.size,
+        editorHeight: editorSplit.size,
+      };
+      const s = JSON.stringify(payload);
+      if (s === lastPersisted.current) return;
+      lastPersisted.current = s;
+      onStateChange(payload);
     };
-    const s = JSON.stringify(payload);
-    if (s === lastPersisted.current) return;
-    lastPersisted.current = s;
-    onStateChange(payload);
+    pendingPersistRef.current = flush;
+    const timer = setTimeout(flush, 200);
+    return () => clearTimeout(timer);
   }, [connection?.id, selectedSavedId, selectedConnection, selectedDatabase, selectedSchema, tabs, activeTabId, history, favorites, treeSplit.size, editorSplit.size, onStateChange]);
+  useEffect(() => () => { pendingPersistRef.current?.(); }, []);
 
   /* ===== History & favorites actions ===== */
   const loadQueryIntoEditor = useCallback((query: string) => {
@@ -1402,9 +1542,22 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
     useConnection: async (nameOrId, database) => {
       const saved = findSaved(nameOrId);
       if (!saved) throw new Error(`no saved connection matches "${nameOrId}"`);
-      await handleConnectionSelect(saved.id);
-      if (database) await handleDatabaseSelect(database);
-      return buildPanelInfo();
+      lastConnErrorRef.current = '';
+      const info = await connectSaved(saved.id, database ?? null);
+      if (!info) throw new Error(lastConnErrorRef.current || `failed to connect to "${saved.label}"`);
+      // Built from the connect result, not from state: the state that
+      // buildPanelInfo reads has not re-rendered yet, so it would still report
+      // the PREVIOUS connection's database.
+      const caps = getDialectCapabilities(saved.dialect);
+      return {
+        connected: true,
+        connectionName: saved.label,
+        savedConnectionId: saved.id,
+        dialect: saved.dialect,
+        database: info.database || null,
+        schema: caps.supportsSchemas ? (selectedSchemaRef.current || null) : null,
+        supportsSchemas: caps.supportsSchemas,
+      };
     },
     listTables: (schema): SqlTableSummary[] => {
       const wanted = schema ?? (activeCaps.supportsSchemas ? selectedSchema : undefined);
@@ -1466,7 +1619,7 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
         schema: sch, table, columns: headers, rows,
       });
       // Reload the table tab if it's open so the import surfaces.
-      const tabId = makeTableTabId(sch, table);
+      const tabId = makeObjectTabId('t', selectedSavedId, selectedDatabase, sch, table);
       if (tabs.some((t) => t.id === tabId)) {
         const tab = tabs.find((t) => t.id === tabId) as SQLTableTab;
         void loadTableData(tab);
@@ -1515,6 +1668,7 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
       {/* Title bar */}
       <div className="container-drag-handle sql-titlebar">
         <button onMouseDown={(e) => e.stopPropagation()} onClick={onClose} title="Close" className="sql-close-dot" />
+        {containerId && <PaneFocusButton containerId={containerId} />}
         <span className="sql-title-label">
           SQL Explorer{connection ? ` — ${connection.database}@${connection.host}` : ''}
         </span>
@@ -1602,9 +1756,7 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
                   leading={(activeCaps.supportsMultipleDatabases || activeCaps.supportsSchemas) ? (
                     <>
                       <SqlContextSelect
-                        connections={connectedSavedId && connection
-                          ? savedConnections.filter((c) => c.id === connectedSavedId).map((c) => ({ id: c.id, label: c.label, dialect: c.dialect }))
-                          : []}
+                        connections={savedConnections.map((c) => ({ id: c.id, label: c.label, dialect: c.dialect }))}
                         connectionId={selectedSavedId ?? ''}
                         connectionLabel={selectedConnection?.label ?? ''}
                         connected={activeConnLive}
@@ -1864,7 +2016,7 @@ export const SqlWorkbench: React.FC<SqlWorkbenchProps> = ({
             setToast(`Imported ${imported} rows into ${importDialog.table}`);
             setTimeout(() => setToast(''), 5000);
             // Reload the open table tab if it matches.
-            const tab = tabs.find((t) => t.id === makeTableTabId(importDialog.schema, importDialog.table));
+            const tab = tabs.find((t) => t.id === makeObjectTabId('t', selectedSavedId, selectedDatabase, importDialog.schema, importDialog.table));
             if (tab && tab.type === 'table') void loadTableData(tab as SQLTableTab);
             setImportDialog(null);
           }}

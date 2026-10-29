@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
+import { PaneFocusButton } from '../focusMode';
 import type { IDETab } from './useTabs';
 import { IDEContextMenu, type ContextMenuEntry } from './IDEContextMenu';
 import { FileTypeIcon } from './IDEFileIcons';
@@ -14,6 +15,8 @@ interface Props {
   onCloseToRight: (tabId: string) => void;
   onPin: (tabId: string) => void;
   onReorder: (fromIdx: number, toIdx: number) => void;
+  /** Owning container, for the header's focus toggle. */
+  containerId?: string;
   onContainerSplitRight?: () => void;
   onContainerSplitDown?: () => void;
 }
@@ -28,6 +31,7 @@ export const IDETabBar: React.FC<Props> = ({
   onCloseToRight,
   onPin,
   onReorder,
+  containerId,
   onContainerSplitRight,
   onContainerSplitDown,
 }) => {
@@ -199,6 +203,7 @@ export const IDETabBar: React.FC<Props> = ({
       {/* Container split buttons */}
       {hasContainerControls && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 2, paddingRight: 6, paddingLeft: 4, flexShrink: 0 }}>
+          {containerId && <PaneFocusButton containerId={containerId} />}
           {onContainerSplitRight && (
             <button
               onMouseDown={e => e.stopPropagation()}

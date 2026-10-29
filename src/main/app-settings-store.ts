@@ -1,8 +1,10 @@
 import { app } from 'electron';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { AppSettings, FastChatSettings } from '../shared/types';
 import { normalizeQuickChatHotkey } from '../shared/quick-chat-hotkey';
+import { DEFAULT_BACKGROUND_COLOR, parseBackgroundColor } from '../shared/background-theme';
+import { writeFileAtomicSync } from './atomic-write';
 
 const SETTINGS_FILE = 'app-settings.json';
 
@@ -13,6 +15,7 @@ const DEFAULTS: AppSettings = {
   defaultVolume: 0.5,
   muteAll: false,
   terminalRenderer: 'xterm',
+  backgroundColor: DEFAULT_BACKGROUND_COLOR,
   // Off by default: splitgrid installs no global hooks/skills and injects no
   // SPLITGRID_* env until the user opts in via Settings.
   agentIntegrations: false,
@@ -26,6 +29,12 @@ const DEFAULTS: AppSettings = {
   agentSftpControl: false,
   // Sub-sub-opt-in under agentSftpControl: allow uploads/changes. Off by default.
   agentSftpWrite: false,
+  // Sub-opt-in under agentIntegrations: drive an activated tab in the user's real
+  // browser via the companion extension (read-only). Off by default.
+  agentChromeControl: false,
+  // Sub-sub-opt-in under agentChromeControl: allow eval/navigate/interaction.
+  // Off by default.
+  agentChromeWrite: false,
   // Off by default: SplitGrid does not edit ~/.tmux.conf / ~/.screenrc until the
   // user opts in. Toggling it writes/removes a managed mouse-mode block.
   terminalMouseScroll: false,
@@ -98,6 +107,8 @@ export class AppSettingsStore {
         defaultVolume: clamp01(o.defaultVolume, DEFAULTS.defaultVolume),
         muteAll: typeof o.muteAll === 'boolean' ? o.muteAll : DEFAULTS.muteAll,
         windowsDefaultShell: typeof o.windowsDefaultShell === 'string' ? o.windowsDefaultShell : undefined,
+        terminalRenderer: o.terminalRenderer === 'ghostty' ? 'ghostty' : DEFAULTS.terminalRenderer,
+        backgroundColor: parseBackgroundColor(o.backgroundColor as string) ?? DEFAULT_BACKGROUND_COLOR,
         fastChat: normalizeFastChat(o.fastChat),
         quickChatHotkey: normalizeQuickChatHotkey(o.quickChatHotkey),
         focusModeHotkey: normalizeQuickChatHotkey(o.focusModeHotkey),
@@ -109,7 +120,10 @@ export class AppSettingsStore {
         agentSqlWrite: typeof o.agentSqlWrite === 'boolean' ? o.agentSqlWrite : DEFAULTS.agentSqlWrite,
         agentSftpControl: typeof o.agentSftpControl === 'boolean' ? o.agentSftpControl : DEFAULTS.agentSftpControl,
         agentSftpWrite: typeof o.agentSftpWrite === 'boolean' ? o.agentSftpWrite : DEFAULTS.agentSftpWrite,
+        agentChromeControl: typeof o.agentChromeControl === 'boolean' ? o.agentChromeControl : DEFAULTS.agentChromeControl,
+        agentChromeWrite: typeof o.agentChromeWrite === 'boolean' ? o.agentChromeWrite : DEFAULTS.agentChromeWrite,
         terminalMouseScroll: typeof o.terminalMouseScroll === 'boolean' ? o.terminalMouseScroll : DEFAULTS.terminalMouseScroll,
+        claudeBinaryPath: str(o.claudeBinaryPath).trim() || undefined,
       };
     } catch {
       return { ...DEFAULTS };
@@ -124,6 +138,8 @@ export class AppSettingsStore {
       windowsDefaultShell: typeof settings.windowsDefaultShell === 'string' && settings.windowsDefaultShell
         ? settings.windowsDefaultShell
         : undefined,
+      terminalRenderer: settings.terminalRenderer === 'ghostty' ? 'ghostty' : DEFAULTS.terminalRenderer,
+      backgroundColor: parseBackgroundColor(settings.backgroundColor) ?? DEFAULT_BACKGROUND_COLOR,
       fastChat: normalizeFastChat(settings.fastChat),
       quickChatHotkey: normalizeQuickChatHotkey(settings.quickChatHotkey),
       focusModeHotkey: normalizeQuickChatHotkey(settings.focusModeHotkey),
@@ -135,10 +151,13 @@ export class AppSettingsStore {
       agentSqlWrite: !!settings.agentSqlWrite,
       agentSftpControl: !!settings.agentSftpControl,
       agentSftpWrite: !!settings.agentSftpWrite,
+      agentChromeControl: !!settings.agentChromeControl,
+      agentChromeWrite: !!settings.agentChromeWrite,
       terminalMouseScroll: !!settings.terminalMouseScroll,
+      claudeBinaryPath: str(settings.claudeBinaryPath).trim() || undefined,
     };
     const dir = path.dirname(this.filePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(this.filePath, JSON.stringify(next, null, 2), 'utf-8');
+    writeFileAtomicSync(this.filePath, JSON.stringify(next, null, 2));
   }
 }

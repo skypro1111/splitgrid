@@ -89,9 +89,9 @@
   background: #676767;
 }
 
-/* Status bar color */
+/* Status bar color — follows the app background (see shared/background-theme) */
 :root {
-  --bg-statusbar: #141414;
+  --bg-statusbar: var(--bg-primary);
 }
 
 /* One-shot highlight on a file/folder name the instant it's synced to a remote.

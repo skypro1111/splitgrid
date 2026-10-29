@@ -44,6 +44,14 @@ export const NewFolderIcon: React.FC<IconProps> = ({ size = 14, color = 'current
   </svg>
 );
 
+export const HistoryIcon: React.FC<IconProps> = ({ size = 14, color = 'currentColor', style }) => (
+  <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke={color} strokeWidth="1.4" style={style}>
+    <path d="M2.5 8a5.5 5.5 0 1 0 1.7-4" strokeLinecap="round" />
+    <path d="M2.2 2.6v3.2h3.2" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M8 5.2V8l2 1.4" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
 export const RefreshIcon: React.FC<IconProps> = ({ size = 14, color = 'currentColor', style }) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={style}>
     <path d="M13.5 8A5.5 5.5 0 1 1 8 2.5" stroke={color} strokeWidth="1.2" strokeLinecap="round" />

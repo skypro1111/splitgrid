@@ -176,13 +176,18 @@ export class MSSQLDriver implements SqlDriver {
   async commitTx(id: string): Promise<void> {
     const session = this.require(id);
     if (!session.tx) return;
+    // A failed commit keeps `tx` so the caller's rollback can still release it.
     await session.tx.commit();
     session.tx = undefined;
   }
+  // Cleared even when rollback throws: a transaction the server already aborted
+  // (deadlock victim, XACT_ABORT) refuses rollback with EABORT, and a stale `tx`
+  // would route every later query on this session into it.
   async rollbackTx(id: string): Promise<void> {
     const session = this.require(id);
-    if (!session.tx) return;
-    await session.tx.rollback();
+    const tx = session.tx;
+    if (!tx) return;
     session.tx = undefined;
+    await tx.rollback();
   }
 }

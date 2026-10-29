@@ -1,7 +1,8 @@
 import { app } from 'electron';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { writeFileAtomicSync } from './atomic-write';
 
 const STORE_FILE = 'known-hosts.json';
 
@@ -37,7 +38,7 @@ class KnownHostsStore {
   private save(): void {
     const dir = path.dirname(this.filePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(this.filePath, JSON.stringify(this.keys, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    writeFileAtomicSync(this.filePath, JSON.stringify(this.keys, null, 2), { mode: 0o600 });
   }
 
   private id(host: string, port: number): string {

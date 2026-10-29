@@ -29,8 +29,9 @@ export interface AgentHookDef {
   configFile: string;
   /** Key path inside the JSON where the hooks object lives (e.g. ['hooks']). */
   hooksKeyPath: string[];
-  /** Per-event timeout written into the nested hook entry (ms). */
-  timeoutMs: number;
+  /** Per-event timeout written into the nested hook entry. SECONDS — both
+   *  Claude Code and Codex read hook `timeout` in seconds, not ms. */
+  timeoutSec: number;
   events: AgentEventMap[];
 }
 
@@ -46,7 +47,7 @@ export const CLAUDE: AgentHookDef = {
   configDirEnv: 'CLAUDE_CONFIG_DIR',
   configFile: 'settings.json',
   hooksKeyPath: ['hooks'],
-  timeoutMs: 5000,
+  timeoutSec: 5,
   events: [
     { agentEvent: 'UserPromptSubmit', splitgridEvent: 'prompt-submit' },
     { agentEvent: 'PreToolUse', splitgridEvent: 'tool', matcher: true },
@@ -65,7 +66,7 @@ const CODEX: AgentHookDef = {
   configDirEnv: 'CODEX_HOME',
   configFile: 'hooks.json',
   hooksKeyPath: ['hooks'],
-  timeoutMs: 5000,
+  timeoutSec: 5,
   events: [
     { agentEvent: 'UserPromptSubmit', splitgridEvent: 'prompt-submit' },
     { agentEvent: 'Stop', splitgridEvent: 'stop' },

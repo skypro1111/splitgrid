@@ -16,6 +16,42 @@ const MAX_RETRIES = 1;
 // reported as truncated so the renderer can offer download instead.
 const MAX_EDIT_SIZE = 5 * 1024 * 1024;
 
+/**
+ * Runs an ssh2 fastPut/fastGet that may take as long as it needs while it keeps
+ * moving, and fails only after TRANSFER_TIMEOUT_MS without progress. A fixed
+ * deadline failed every file that simply takes longer than that to send.
+ *
+ * The stall error deliberately does not read as a connection error: withRetry
+ * would otherwise tear down the shared session — and every other transfer on it —
+ * and restart this file from zero. A really dead link is caught by keepalive.
+ */
+function transferWithIdleTimeout(
+  start: (step: () => void, done: (err?: Error) => void) => void,
+  label: string,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const arm = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        settled = true;
+        // Flagged rather than worded around: the label is a path, and a file named
+        // `socket.js` would otherwise match isConnectionError's keywords.
+        reject(Object.assign(new Error(`Stalled: ${label} made no progress for ${TRANSFER_TIMEOUT_MS}ms`), { stalled: true }));
+      }, TRANSFER_TIMEOUT_MS);
+    };
+    arm();
+    start(arm, (err) => {
+      if (timer) clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Timeout: ${label} after ${ms}ms`)), ms);
@@ -56,6 +92,7 @@ function signatureOf(config: ConnectionConfig): string {
 }
 
 function isConnectionError(err: Error): boolean {
+  if ((err as { stalled?: boolean }).stalled) return false;
   const msg = (err.message ?? '').toLowerCase();
   return (
     msg.includes('not connected') ||
@@ -321,14 +358,8 @@ export class SFTPSyncManager {
     return this.withRetry(workspaceId, targetId, config, async (session) => {
       const remoteDir = remoteFile.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
       await this.ensureRemoteDirWithSession(session, remoteDir);
-      await withTimeout(
-        new Promise<void>((resolve, reject) => {
-          session.sftp.fastPut(localFile, remoteFile, (err: Error | undefined) => {
-            if (err) reject(err);
-            else resolve();
-          });
-        }),
-        TRANSFER_TIMEOUT_MS,
+      await transferWithIdleTimeout(
+        (step, done) => session.sftp.fastPut(localFile, remoteFile, { step }, (err: Error | undefined) => done(err)),
         `fastPut ${localFile}`,
       );
     });
@@ -348,14 +379,8 @@ export class SFTPSyncManager {
         const { mkdir: mkdirFs } = await import('node:fs/promises');
         await mkdirFs(localDir, { recursive: true }).catch(() => {});
       }
-      await withTimeout(
-        new Promise<void>((resolve, reject) => {
-          session.sftp.fastGet(remoteFile, localFile, (err: Error | undefined) => {
-            if (err) reject(err);
-            else resolve();
-          });
-        }),
-        TRANSFER_TIMEOUT_MS,
+      await transferWithIdleTimeout(
+        (step, done) => session.sftp.fastGet(remoteFile, localFile, { step }, (err: Error | undefined) => done(err)),
         `fastGet ${remoteFile}`,
       );
     });
@@ -376,14 +401,8 @@ export class SFTPSyncManager {
         .slice(0, -1)
         .join('/') || '/';
       await this.ensureRemoteDirWithSession(session, remoteDir);
-      await withTimeout(
-        new Promise<void>((resolve, reject) => {
-          session.sftp.fastPut(localFile, remoteFile, (err: Error | undefined) => {
-            if (err) reject(err);
-            else resolve();
-          });
-        }),
-        TRANSFER_TIMEOUT_MS,
+      await transferWithIdleTimeout(
+        (step, done) => session.sftp.fastPut(localFile, remoteFile, { step }, (err: Error | undefined) => done(err)),
         `fastPut ${localFile}`,
       );
     });
@@ -403,14 +422,8 @@ export class SFTPSyncManager {
         const { mkdir } = await import('node:fs/promises');
         await mkdir(localDir, { recursive: true }).catch(() => {});
       }
-      await withTimeout(
-        new Promise<void>((resolve, reject) => {
-          session.sftp.fastGet(remoteFile, localFile, (err: Error | undefined) => {
-            if (err) reject(err);
-            else resolve();
-          });
-        }),
-        TRANSFER_TIMEOUT_MS,
+      await transferWithIdleTimeout(
+        (step, done) => session.sftp.fastGet(remoteFile, localFile, { step }, (err: Error | undefined) => done(err)),
         `fastGet ${remoteFile}`,
       );
     });

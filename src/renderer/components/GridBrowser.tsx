@@ -1,4 +1,5 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
+import { PaneFocusButton } from './focusMode';
 import { SplitHorizontalIcon, SplitVerticalIcon } from './Icons';
 import {
   registerBrowser,
@@ -138,6 +139,30 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
     }
   }, []);
 
+  // Explicit navigation (address-bar Enter, agent open/navigate). Asking for the
+  // URL that's already loaded — e.g. retrying once the dev server is up, after the
+  // first load failed — must load it again; requestNavigation's dedupe (still used
+  // for the initial dom-ready navigation) would silently swallow it.
+  const explicitNavigate = useCallback((wv: Electron.WebviewTag, targetUrl: string) => {
+    if (!targetUrl) return;
+    if (isDomReadyRef.current) {
+      let current = '';
+      try { current = wv.getURL(); } catch { /* not attached yet */ }
+      if (targetUrl === current) {
+        lastRequestedUrlRef.current = targetUrl;
+        wv.reload();
+        return;
+      }
+      if (targetUrl === lastRequestedUrlRef.current) {
+        // Same target as the last request but not what's showing (load failed
+        // elsewhere / still in flight): force a fresh load.
+        wv.loadURL(targetUrl).catch(() => { /* failure surfaces as did-fail-load */ });
+        return;
+      }
+    }
+    requestNavigation(wv, targetUrl);
+  }, [requestNavigation]);
+
   // Attach webview event listeners once on mount — never re-run.
   useEffect(() => {
     const wv = webviewRef.current;
@@ -213,7 +238,7 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
         wv.executeJavaScript('document.body ? document.body.innerText : ""', true).then(String),
       getHtml: () =>
         wv.executeJavaScript('document.documentElement ? document.documentElement.outerHTML : ""', true).then(String),
-      navigate: (target: string) => requestNavigation(wv, target),
+      navigate: (target: string) => explicitNavigate(wv, target),
       back: () => { if (wv.canGoBack()) wv.goBack(); },
       forward: () => { if (wv.canGoForward()) wv.goForward(); },
       reload: () => wv.reload(),
@@ -290,7 +315,7 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
       unregisterBrowser(containerId);
       isDomReadyRef.current = false;
     };
-  }, [applyWebviewZoom, containerId, requestNavigation]); // stable callbacks via refs
+  }, [applyWebviewZoom, containerId, requestNavigation, explicitNavigate]); // stable callbacks via refs
 
   // Do not mirror prop `url` back into webview after mount.
   // `onUrlChange` already reports navigation upstream; mirroring it back causes
@@ -319,15 +344,16 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
 
     setAddressBar(finalUrl);
     if (isDomReadyRef.current) {
-      requestNavigation(wv, finalUrl);
+      explicitNavigate(wv, finalUrl);
     } else {
       pendingUrlRef.current = finalUrl;
     }
-  }, [requestNavigation]);
+  }, [explicitNavigate]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === 'Enter') {
+      // IME: the Enter that commits a composition candidate isn't a submit.
+      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
         e.preventDefault();
         navigate(addressBar);
       }
@@ -411,6 +437,7 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
         >
           x
         </button>
+        <PaneFocusButton containerId={containerId} />
         <span
           style={{
             fontSize: '0.9em',

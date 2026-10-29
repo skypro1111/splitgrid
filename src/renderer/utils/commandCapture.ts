@@ -77,7 +77,10 @@ export function noteTerminalOutput(sessionId: string, data: string): void {
   const nl = tail.lastIndexOf('\n');
   if (nl >= 0) tail = tail.slice(nl + 1);
   st.outTail = tail.slice(-160);
-  st.armedSecret = SECRET_PROMPT_RE.test(st.outTail);
+  // Once armed, stay armed until the line is submitted (Enter clears it): output
+  // that lands mid-entry (a tmux status-line clock redraw) moves the tail off the
+  // prompt and would otherwise let the secret be recorded.
+  st.armedSecret = st.armedSecret || SECRET_PROMPT_RE.test(st.outTail);
 }
 
 /** Feed a raw input chunk for a session; emits to the listener on Enter. */

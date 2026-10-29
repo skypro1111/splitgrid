@@ -106,6 +106,9 @@ export function sqlStringLiteral(text: string, dialect: SQLDialect): string {
     // Escape backslashes too (default MySQL mode treats \ as an escape char).
     return `'${quoted.split('\\').join('\\\\')}'`;
   }
+  // N'' — a plain literal goes through the database's code page, so Cyrillic and
+  // other non-Latin text would come back as '?' on a non-Unicode collation.
+  if (dialect === 'mssql') return `N'${quoted}'`;
   return `'${quoted}'`;
 }
 

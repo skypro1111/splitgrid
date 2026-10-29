@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { browserSkillResourcePath, terminalSkillResourcePath, sqlSkillResourcePath, sftpSkillResourcePath } from '../agent-hooks/paths';
+import { browserSkillResourcePath, terminalSkillResourcePath, sqlSkillResourcePath, sftpSkillResourcePath, agentPaneSkillResourcePath } from '../agent-hooks/paths';
 
 // ─── Agent skill install ─────────────────────────────────────────────────────
 // Ships splitgrid's Claude Code skills into the agent's global skills dir so a
@@ -18,6 +18,9 @@ const BROWSER_SKILL = 'sg-browser';
 const TERMINAL_SKILL = 'sg-terminal';
 const SQL_SKILL = 'sg-sql';
 const SFTP_SKILL = 'sg-sftp';
+// Claude Code pane inspection/control rides the terminal sub-opt-in (same
+// privilege: prompting a pane is prompting an agent).
+const AGENT_PANE_SKILL = 'sg-agent';
 
 /** Claude's config dir: $CLAUDE_CONFIG_DIR if set, else ~/.claude. */
 function claudeConfigDir(): string {
@@ -77,6 +80,8 @@ export function syncInstalledAgentSkills(terminalControl: boolean, sqlControl = 
   installSkill(claudeDir, BROWSER_SKILL, browserSkillResourcePath());
   if (terminalControl) installSkill(claudeDir, TERMINAL_SKILL, terminalSkillResourcePath());
   else removeSkill(claudeDir, TERMINAL_SKILL);
+  if (terminalControl) installSkill(claudeDir, AGENT_PANE_SKILL, agentPaneSkillResourcePath());
+  else removeSkill(claudeDir, AGENT_PANE_SKILL);
   if (sqlControl) installSkill(claudeDir, SQL_SKILL, sqlSkillResourcePath());
   else removeSkill(claudeDir, SQL_SKILL);
   if (sftpControl) installSkill(claudeDir, SFTP_SKILL, sftpSkillResourcePath());
@@ -90,6 +95,7 @@ export function uninstallAgentSkills(): void {
   removeSkill(claudeDir, TERMINAL_SKILL);
   removeSkill(claudeDir, SQL_SKILL);
   removeSkill(claudeDir, SFTP_SKILL);
+  removeSkill(claudeDir, AGENT_PANE_SKILL);
 }
 
 // Skill dir names this app shipped under previous names (the old product name

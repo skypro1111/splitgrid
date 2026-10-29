@@ -132,3 +132,6 @@ Desktop.ini
 
 # Compiled output of the claude-hooks-daemon subproject (tsc → dist/)
 claude-hooks-daemon/dist/
+
+# Browser-extension bundle (built by `npm run build:ext`, loaded unpacked)
+extension/dist/

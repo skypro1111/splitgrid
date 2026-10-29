@@ -1,7 +1,8 @@
 import { app, safeStorage } from 'electron';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { randomBytes, scryptSync, createHash } from 'node:crypto';
 import path from 'node:path';
+import { writeFileAtomicSync } from './atomic-write';
 
 // Key material for the AES fallback used when the OS keychain (safeStorage) is
 // unavailable — common on Linux without a keyring/libsecret. The OLD scheme
@@ -54,7 +55,7 @@ function persist(secret: Buffer, salt: Buffer): void {
       : secret.toString('base64'),
     wrapped,
   };
-  writeFileSync(filePath(), JSON.stringify(stored), { encoding: 'utf-8', mode: 0o600 });
+  writeFileAtomicSync(filePath(), JSON.stringify(stored), { mode: 0o600 });
 }
 
 /**
@@ -66,25 +67,52 @@ export function fallbackKey(): Buffer {
 
   let secret: Buffer | null = null;
   let salt: Buffer | null = null;
+  // The file is fine but its secret is keychain-wrapped and the keychain is
+  // unavailable / refused this session (Linux: keyring missing under another
+  // desktop, --password-store change). That is usually transient — overwriting
+  // the file would make every saved `aes:` secret undecryptable for good.
+  let keychainLocked = false;
 
   if (existsSync(filePath())) {
+    let data: StoredKey | null = null;
     try {
-      const data = JSON.parse(readFileSync(filePath(), 'utf-8')) as StoredKey;
+      data = JSON.parse(readFileSync(filePath(), 'utf-8')) as StoredKey;
       salt = Buffer.from(data.salt, 'base64');
+    } catch {
+      data = null;
+      salt = null;
+    }
+    if (data && salt) {
       if (data.wrapped) {
-        if (safeStorage.isEncryptionAvailable()) {
-          secret = Buffer.from(
-            safeStorage.decryptString(Buffer.from(data.secret, 'base64')),
-            'base64',
-          );
+        try {
+          if (safeStorage.isEncryptionAvailable()) {
+            secret = Buffer.from(
+              safeStorage.decryptString(Buffer.from(data.secret, 'base64')),
+              'base64',
+            );
+          } else {
+            keychainLocked = true;
+          }
+        } catch {
+          keychainLocked = true;
         }
       } else {
         secret = Buffer.from(data.secret, 'base64');
       }
-    } catch {
-      secret = null;
-      salt = null;
+    } else {
+      // Unparsable: the old key is unrecoverable either way. Keep a copy for
+      // manual recovery before a fresh key replaces it.
+      try { copyFileSync(filePath(), `${filePath()}.corrupt-${Date.now()}`); } catch { /* best-effort */ }
     }
+  }
+
+  if (keychainLocked) {
+    // Session-only key: secrets saved now won't survive a restart, but nothing
+    // already saved is destroyed. Cached like the real key so this session
+    // encrypts and decrypts consistently.
+    console.warn('[fallback-key] keychain unavailable; using a session-only key, credential-key.json left untouched');
+    cached = scryptSync(randomBytes(32), randomBytes(16), 32);
+    return cached;
   }
 
   if (!secret || !salt) {

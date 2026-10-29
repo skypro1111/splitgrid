@@ -92,6 +92,27 @@ export function sftpHelperPath(posix = false): string {
 }
 
 /**
+ * Absolute path to the OS-appropriate Claude Code pane helper. Agents invoke
+ * this as `<path> <cmd> [args]` to inspect and drive the app's agent panes; it
+ * POSTs the argv (tagged with $SPLITGRID_AGENT_TOKEN) to splitgrid's /agent
+ * endpoint and prints the JSON reply. Plain shell + curl, like the others.
+ *
+ * `posix` forces the .sh variant even on win32 (WSL terminals); see hookHelperPath.
+ */
+export function agentPaneHelperPath(posix = false): string {
+  const name = (!posix && process.platform === 'win32') ? 'splitgrid-agent.cmd' : 'splitgrid-agent.sh';
+  return path.join(resourcesDir(), name);
+}
+
+/**
+ * Absolute path to the bundled Claude Code skill that teaches an agent how to
+ * inspect and drive the app's Claude Code panes via $SPLITGRID_AGENT_CLI.
+ */
+export function agentPaneSkillResourcePath(): string {
+  return path.join(resourcesDir(), 'skills', 'sg-agent', 'SKILL.md');
+}
+
+/**
  * Absolute path to the bundled <webview> focus-bridge preload. Loaded into every
  * browser guest page so a click (which never reaches the host window) posts a
  * host message to focus the owning pane.

@@ -1,6 +1,9 @@
 import React from 'react';
+import { PaneFocusButton } from './focusMode';
 import { SqlWorkbench } from './sql/SqlWorkbench';
+import { AgentPanel } from './agent/AgentPanel';
 import { SFTPPanel } from './SFTPPanel';
+import { GitPanel } from './git';
 import { SSHConnectPanel } from './SSHConnectPanel';
 import { SplitHorizontalIcon, SplitVerticalIcon } from './Icons';
 import type { Container as ContainerType, TerminalSessionInfo, SavedConnection, SSHConnectionConfig } from '../../shared/types';
@@ -50,6 +53,20 @@ export const LayoutContainer: React.FC<LayoutContainerProps> = ({
       }));
     });
   }, []);
+  // Stable ref callbacks: an inline `ref={(el) => …}` is a new function every
+  // render, so React re-invokes it on every App render — re-dispatching
+  // portal-target-mounted and forcing a refit of every visible terminal. A
+  // stable callback fires only when the target element actually mounts.
+  const containerId = container.id;
+  const terminalTargetRef = React.useCallback((el: HTMLDivElement | null) => {
+    if (el) notifyPortalTargetMounted('terminal', containerId);
+  }, [notifyPortalTargetMounted, containerId]);
+  const browserTargetRef = React.useCallback((el: HTMLDivElement | null) => {
+    if (el) notifyPortalTargetMounted('browser', containerId);
+  }, [notifyPortalTargetMounted, containerId]);
+  const ideTargetRef = React.useCallback((el: HTMLDivElement | null) => {
+    if (el) notifyPortalTargetMounted('ide', containerId);
+  }, [notifyPortalTargetMounted, containerId]);
 
   // Terminal renderer lives in <TerminalPortal> at the App root.
   if (container.content.type === 'terminal') {
@@ -79,6 +96,7 @@ export const LayoutContainer: React.FC<LayoutContainerProps> = ({
               onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = 'var(--bg-primary)'; }}
               onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7'; e.currentTarget.style.color = 'transparent'; }}
             >x</button>
+            <PaneFocusButton containerId={container.id} />
             <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: statusColor, flexShrink: 0 }} />
             <span style={{ fontSize: '10px', fontWeight: 600, padding: '1px 5px', borderRadius: '3px', background: container.content.terminalType === 'ssh' ? 'rgba(76,157,243,0.15)' : 'rgba(21,172,145,0.15)', color: container.content.terminalType === 'ssh' ? 'var(--accent-blue)' : 'var(--accent-green)', flexShrink: 0 }}>
               {container.content.terminalType === 'ssh' ? 'SSH' : 'LOCAL'}
@@ -102,6 +120,13 @@ export const LayoutContainer: React.FC<LayoutContainerProps> = ({
                 {container.content.connectionError}
               </div>
             )}
+            {container.content.connectionError && (
+              // Clearing the error hands the container back to App's restore effect.
+              <button
+                onClick={() => onContentChange?.(container.id, { ...container.content, connectionError: undefined })}
+                style={{ marginTop: '4px', padding: '3px 12px', fontSize: '11px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-hover)', color: 'var(--text-primary)', cursor: 'pointer' }}
+              >Retry</button>
+            )}
           </div>
         </div>
       );
@@ -112,9 +137,7 @@ export const LayoutContainer: React.FC<LayoutContainerProps> = ({
     // active. This keeps the terminal mounted across workspace switches.
     return (
       <div
-        ref={(el) => {
-          if (el) notifyPortalTargetMounted('terminal', container.id);
-        }}
+        ref={terminalTargetRef}
         data-terminal-target={container.id}
         style={{ height: '100%', width: '100%', overflow: 'hidden' }}
       />
@@ -127,9 +150,7 @@ export const LayoutContainer: React.FC<LayoutContainerProps> = ({
   if (container.content.type === 'browser') {
     return (
       <div
-        ref={(el) => {
-          if (el) notifyPortalTargetMounted('browser', container.id);
-        }}
+        ref={browserTargetRef}
         data-browser-target={container.id}
         style={{ height: '100%', width: '100%', overflow: 'hidden' }}
       />
@@ -140,9 +161,7 @@ export const LayoutContainer: React.FC<LayoutContainerProps> = ({
   if (container.content.type === 'ide' && container.content.rootPath) {
     return (
       <div
-        ref={(el) => {
-          if (el) notifyPortalTargetMounted('ide', container.id);
-        }}
+        ref={ideTargetRef}
         data-ide-target={container.id}
         style={{ height: '100%', width: '100%', overflow: 'hidden' }}
       />
@@ -175,6 +194,7 @@ export const LayoutContainer: React.FC<LayoutContainerProps> = ({
   if (container.content.type === 'ssh-connect') {
     return (
       <SSHConnectPanel
+        containerId={container.id}
         savedConnections={savedConnections ?? []}
         recentConnectionIds={recentConnectionIds ?? []}
         onConnect={(savedId) => onSSHConnect?.(container.id, savedId) ?? Promise.resolve()}
@@ -182,6 +202,37 @@ export const LayoutContainer: React.FC<LayoutContainerProps> = ({
         onDeleteSaved={(id) => onDeleteSavedConnection?.(id) ?? Promise.resolve()}
         onClose={() => onClose(container.id)}
         onBackToEmpty={() => onContentChange?.(container.id, { type: 'empty' })}
+        onSplitRight={onSplitRight}
+        onSplitDown={onSplitDown}
+      />
+    );
+  }
+
+  // Claude Code agent pane
+  if (container.content.type === 'agent') {
+    return (
+      <AgentPanel
+        containerId={container.id}
+        content={container.content}
+        workspaceRootPath={workspaceRootPath}
+        onContentChange={(content) => onContentChange?.(container.id, content)}
+        onClose={() => onClose(container.id)}
+        onSplitRight={onSplitRight}
+        onSplitDown={onSplitDown}
+      />
+    );
+  }
+
+  // Git repository browser
+  if (container.content.type === 'git') {
+    return (
+      <GitPanel
+        containerId={container.id}
+        content={container.content}
+        workspaceRootPath={workspaceRootPath}
+        zoomLevel={zoomLevel}
+        onContentChange={(content) => onContentChange?.(container.id, content)}
+        onClose={() => onClose(container.id)}
         onSplitRight={onSplitRight}
         onSplitDown={onSplitDown}
       />

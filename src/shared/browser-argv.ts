@@ -2,6 +2,8 @@
 // Extracted from useBrowserAgentBridge so the flag/positional parsing can be
 // unit-tested without React, the browser registry, or a live <webview>. Pulls
 // the known flags out of an argv array and returns the rest as positionals.
+// Lives in shared/ because the MAIN process reads `--target` too, to decide
+// whether a command goes to a renderer <webview> pane or to a browser tab.
 
 // Wait commands cap below the bridge's 35s request timeout so a real timeout
 // comes back as a clean reply, never a transport error.

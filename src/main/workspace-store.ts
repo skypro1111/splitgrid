@@ -2,6 +2,7 @@ import { app } from 'electron';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import type { WorkspaceState, EnvironmentSummary, Workspace } from '../shared/types';
+import { writeFileAtomicSync } from './atomic-write';
 
 const STORE_FILE_PREFIX = 'workspaces-state';
 const RECENT_WS_FILE_PREFIX = 'recent-workspaces';
@@ -40,6 +41,11 @@ export class WorkspaceStore {
   private userDataPath: string;
   private recentEnvsFilePath: string;
   private envNamesFilePath: string;
+  // Last workspace JSON mirrored into each folder file. State saves fire on any
+  // change in any workspace, and `savedAt` would make every rewrite differ —
+  // skipping unchanged folders avoids rewriting (and SFTP auto-syncing / cloud
+  // drive re-uploading) every folder file on every edit elsewhere.
+  private lastFolderJson = new Map<string, string>();
 
   constructor() {
     this.userDataPath = app.getPath('userData');
@@ -102,7 +108,7 @@ export class WorkspaceStore {
     if (!existsSync(this.userDataPath)) {
       mkdirSync(this.userDataPath, { recursive: true });
     }
-    writeFileSync(this.recentEnvsFilePath, JSON.stringify(next, null, 2), 'utf-8');
+    writeFileAtomicSync(this.recentEnvsFilePath, JSON.stringify(next, null, 2));
   }
 
   removeRecentEnvironmentPath(filePath: string): void {
@@ -111,7 +117,7 @@ export class WorkspaceStore {
     if (!existsSync(this.userDataPath)) {
       mkdirSync(this.userDataPath, { recursive: true });
     }
-    writeFileSync(this.recentEnvsFilePath, JSON.stringify(next, null, 2), 'utf-8');
+    writeFileAtomicSync(this.recentEnvsFilePath, JSON.stringify(next, null, 2));
   }
 
   private defaultEnvironmentName(envId: string, source: 'internal' | 'file', envPath?: string): string {
@@ -150,7 +156,7 @@ export class WorkspaceStore {
     if (!existsSync(this.userDataPath)) {
       mkdirSync(this.userDataPath, { recursive: true });
     }
-    writeFileSync(this.envNamesFilePath, JSON.stringify(names, null, 2), 'utf-8');
+    writeFileAtomicSync(this.envNamesFilePath, JSON.stringify(names, null, 2));
   }
 
   deleteEnvironment(envId: string): void {
@@ -171,7 +177,7 @@ export class WorkspaceStore {
       if (!existsSync(this.userDataPath)) {
         mkdirSync(this.userDataPath, { recursive: true });
       }
-      writeFileSync(this.envNamesFilePath, JSON.stringify(names, null, 2), 'utf-8');
+      writeFileAtomicSync(this.envNamesFilePath, JSON.stringify(names, null, 2));
     }
   }
 
@@ -248,7 +254,7 @@ export class WorkspaceStore {
     if (!existsSync(this.userDataPath)) {
       mkdirSync(this.userDataPath, { recursive: true });
     }
-    writeFileSync(this.getRecentWorkspacesFilePath(setId), JSON.stringify(next, null, 2), 'utf-8');
+    writeFileAtomicSync(this.getRecentWorkspacesFilePath(setId), JSON.stringify(next, null, 2));
   }
 
   // --- Per-workspace folder settings (.splitgrid/workspace.json) ---
@@ -276,12 +282,16 @@ export class WorkspaceStore {
       if (!existsSync(gitignorePath)) {
         writeFileSync(gitignorePath, '*\n', 'utf-8');
       }
+      const target = this.workspaceFolderFilePath(root);
+      const json = JSON.stringify(workspace);
+      if (this.lastFolderJson.get(target) === json && existsSync(target)) return;
       const payload: PersistedWorkspaceFolderV1 = {
         version: STATE_VERSION,
         savedAt: Date.now(),
         workspace,
       };
-      writeFileSync(this.workspaceFolderFilePath(root), JSON.stringify(payload, null, 2), 'utf-8');
+      writeFileAtomicSync(target, JSON.stringify(payload, null, 2));
+      this.lastFolderJson.set(target, json);
     } catch (error) {
       console.error('Failed to write workspace folder settings:', error);
     }
@@ -302,14 +312,47 @@ export class WorkspaceStore {
     }
   }
 
+  // Nothing stops two workspaces from pointing at the same folder (an
+  // accidental duplicate of one project). Both would then read the same
+  // `.splitgrid/workspace.json` — ending up as twins sharing container ids —
+  // and both would write it, so whichever saved last silently overwrote the
+  // other's layout. Exactly one workspace per folder owns that file: the one it
+  // was written by, else the most recently updated of the group. The others
+  // keep the copy stored in this environment's own state.
+  private folderOwnerIds(workspaces: Workspace[]): Set<string> {
+    const groups = new Map<string, Workspace[]>();
+    for (const ws of workspaces) {
+      const dir = typeof ws?.workingDirectory === 'string' ? ws.workingDirectory.trim() : '';
+      if (!dir) continue;
+      const key = path.resolve(dir);
+      const group = groups.get(key);
+      if (group) group.push(ws);
+      else groups.set(key, [ws]);
+    }
+    const owners = new Set<string>();
+    for (const [dir, group] of groups) {
+      if (group.length === 1) {
+        owners.add(group[0].id);
+        continue;
+      }
+      const folderId = this.readWorkspaceFolderFile(dir)?.id;
+      const owner =
+        group.find((ws) => ws.id === folderId) ??
+        [...group].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0];
+      owners.add(owner.id);
+    }
+    return owners;
+  }
+
   // The folder copy is authoritative for a workspace's *content* (layout,
   // containers, notes, todos, …), but identity and the folder binding stay tied
   // to this environment's entry so activeWorkspaceId and cross-references keep
   // resolving — e.g. when the folder was first written on another machine.
   private applyWorkspaceFolderOverrides(workspaces: Workspace[]): Workspace[] {
+    const owners = this.folderOwnerIds(workspaces);
     return workspaces.map((ws) => {
       const dir = typeof ws?.workingDirectory === 'string' ? ws.workingDirectory.trim() : '';
-      if (!dir) return ws;
+      if (!dir || !owners.has(ws.id)) return ws;
       const folderWs = this.readWorkspaceFolderFile(dir);
       if (!folderWs) return ws;
       return { ...folderWs, id: ws.id, workingDirectory: ws.workingDirectory };
@@ -337,6 +380,7 @@ export class WorkspaceStore {
           envTodos: Array.isArray(parsed.envTodos) ? (parsed.envTodos as WorkspaceState['envTodos']) : undefined,
           envCommandFavorites: Array.isArray(parsed.envCommandFavorites) ? (parsed.envCommandFavorites as WorkspaceState['envCommandFavorites']) : undefined,
           recentCommands: Array.isArray(parsed.recentCommands) ? (parsed.recentCommands as WorkspaceState['recentCommands']) : undefined,
+          envPrompts: Array.isArray(parsed.envPrompts) ? (parsed.envPrompts as WorkspaceState['envPrompts']) : undefined,
         };
       }
 
@@ -363,14 +407,17 @@ export class WorkspaceStore {
       envTodos: state.envTodos,
       envCommandFavorites: state.envCommandFavorites,
       recentCommands: state.recentCommands,
+      envPrompts: state.envPrompts,
     };
-    writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8');
+    writeFileAtomicSync(filePath, JSON.stringify(payload, null, 2));
 
     // Mirror each folder-bound workspace into its own `.splitgrid/workspace.json`
     // so its settings travel with the folder. The userData copy above stays the
     // canonical environment record; the folder copy wins on load when present.
+    // Only the folder's owning workspace writes it — see folderOwnerIds().
+    const owners = this.folderOwnerIds(state.workspaces);
     for (const ws of state.workspaces) {
-      this.writeWorkspaceFolderFile(ws);
+      if (owners.has(ws.id)) this.writeWorkspaceFolderFile(ws);
     }
   }
 }

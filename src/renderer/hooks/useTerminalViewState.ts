@@ -52,6 +52,20 @@ function setsEqual(a: Set<string>, b: Set<string>): boolean {
 }
 
 /**
+ * Whether `kind` is a NEW completion for a session whose last non-null kind was
+ * `lastKind` (undefined = never seen). Only a real transition into done counts —
+ * done → (unknown) → done is the same completion, not a new one.
+ */
+export function isNewDoneEdge(
+  kind: ActivityKind | null,
+  lastKind: ActivityKind | undefined,
+  freshNotify = false,
+): boolean {
+  if (kind !== 'done') return false;
+  return freshNotify || lastKind !== 'done';
+}
+
+/**
  * Resolves each terminal's activity kind (working / waiting / done) AND whether
  * a finished ("done") terminal has been *viewed* yet.
  *
@@ -72,7 +86,10 @@ export function useTerminalViewState(inputs: Inputs): TerminalViewState {
 
   // Persistent per-session bookkeeping (no re-render).
   const everWorkedRef = useRef<Set<string>>(new Set());
-  const prevKindRef = useRef<Map<string, ActivityKind | null>>(new Map());
+  // Last NON-null kind per session. A transient null (the process poll failed or
+  // briefly missed the foreground command) must not erase "it was already done",
+  // or done → null → done re-stamps doneAt and a long-viewed terminal rings again.
+  const lastKindRef = useRef<Map<string, ActivityKind>>(new Map());
   const doneAtRef = useRef<Map<string, number>>(new Map());
   const viewedAtRef = useRef<Map<string, number>>(new Map());
   // Last time the user typed into a session FROM THE WEB viewer. Treated as
@@ -95,7 +112,7 @@ export function useTerminalViewState(inputs: Inputs): TerminalViewState {
     if (cs === 'working') return 'working';
     if (cs === 'waiting') return 'waiting';
     if (cs === 'idle') return 'done'; // an 'idle' entry only exists post-turn
-    // No hook state for this agent: either a hookless agent (cursor) or a WSL
+    // No hook state for this agent: either a hookless agent (cursor, opencode) or a WSL
     // claude whose hooks live in the distro's Linux ~/.claude, not the Windows one
     // splitgrid installs into. Fall through to output content-diff so it still shows
     // working/done.
@@ -140,16 +157,20 @@ export function useTerminalViewState(inputs: Inputs): TerminalViewState {
         const agentHasHookState =
           (cmd === 'claude' || cmd === 'codex') && inputsRef.current.claudeActivity.get(sid) !== undefined;
         const notifiedAt = inputsRef.current.notifyAt.get(sid) ?? 0;
+        let freshNotify = false;
         if (isAgent && !agentHasHookState && kind !== 'working' && notifiedAt > (viewedAtRef.current.get(sid) ?? 0)) {
           kind = 'done';
+          // A pulse newer than the last done stamp is a new completion even if
+          // the terminal already read as done.
+          freshNotify = notifiedAt > (doneAtRef.current.get(sid) ?? 0);
         }
 
         if (kind === 'working') everWorkedRef.current.add(sid);
-        // Stamp the moment it *enters* done.
-        if (kind === 'done' && prevKindRef.current.get(sid) !== 'done') {
+        // Stamp the moment it *enters* done (from working/waiting, or first sight).
+        if (isNewDoneEdge(kind, lastKindRef.current.get(sid), freshNotify)) {
           doneAtRef.current.set(sid, now);
         }
-        prevKindRef.current.set(sid, kind);
+        if (kind) lastKindRef.current.set(sid, kind);
         if (viewed) viewedAtRef.current.set(sid, now);
 
         if (kind) nextKinds.set(sid, kind);

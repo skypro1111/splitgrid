@@ -7,6 +7,7 @@ import {
   setAgentSqlWriteEnabled, setAgentSftpControlEnabled, setAgentSftpWriteEnabled,
 } from './local-shell-manager';
 import { setTerminalControlEnabled } from './agent-terminal-bridge';
+import { setAgentPaneControlEnabled } from './agent-pane-bridge';
 
 // ─── Agent integrations: the single permission gate ──────────────────────────
 // Every GLOBAL change splitgrid can make to the machine on an agent's behalf is
@@ -43,6 +44,7 @@ export function initAgentIntegrations(
   setAgentIntegrationsEnabled(enabled);
   setAgentTerminalControlEnabled(terminal);
   setTerminalControlEnabled(terminal);
+  setAgentPaneControlEnabled(terminal);
   setAgentSqlControlEnabled(sql);
   setAgentSqlWriteEnabled(sql && sqlWrite);
   setAgentSftpControlEnabled(sftp);
@@ -81,6 +83,7 @@ export function applyAgentIntegrations(
   setAgentIntegrationsEnabled(false);
   setAgentTerminalControlEnabled(false);
   setTerminalControlEnabled(false);
+  setAgentPaneControlEnabled(false);
   setAgentSqlControlEnabled(false);
   setAgentSqlWriteEnabled(false);
   setAgentSftpControlEnabled(false);

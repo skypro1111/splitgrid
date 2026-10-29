@@ -1,9 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { BrowserWindow, ipcMain } from 'electron';
-import { handleBrowserRequest } from './agent-browser-bridge';
+import { handleBrowserRequest, isKnownTerminal } from './agent-browser-bridge';
 import { handleTerminalRequest } from './agent-terminal-bridge';
 import { handleSqlRequest } from './agent-sql-bridge';
 import { handleSftpRequest } from './agent-sftp-bridge';
+import { handleAgentPaneRequest } from './agent-pane-bridge';
+import { startExtensionChannel, stopExtensionChannel } from './agent-browser-channel';
 
 // ─── Agent activity receiver ─────────────────────────────────────────────────
 // Agents launched inside a splitgrid terminal report their turn lifecycle by
@@ -25,6 +27,13 @@ export type ClaudeActivityState = 'working' | 'idle' | 'waiting';
 // can be generous: it only trips during a single tool / thinking gap longer than
 // this with no Stop — far better than falsely flipping to Done mid-turn.
 const SAFETY_IDLE_MS = 600_000;
+
+// Largest request body we buffer. Agent commands are argv + paths (never file
+// contents), so this is generous; without a cap any local process — or a web
+// page POSTing to loopback — could stream a body until main runs out of memory.
+const MAX_BODY_BYTES = 5 * 1024 * 1024;
+
+class BodyTooLargeError extends Error {}
 
 let server: Server | null = null;
 let wslServer: Server | null = null;
@@ -69,6 +78,9 @@ const HOOK_EVENT_STATE: Record<string, ClaudeActivityState> = {
 export function handleHookEvent(terminal: string, event: string): void {
   const state = HOOK_EVENT_STATE[event.trim().toLowerCase()];
   if (!terminal || !state) return;
+  // /hook carries no token (fire-and-forget by design), so only accept ids this
+  // run actually created — otherwise junk ids would grow the map without bound.
+  if (!isKnownTerminal(terminal)) return;
   // "waiting" only counts mid-turn — a permission/question while working. The
   // SAME notification fires when the agent sits idle after a turn ("waiting for
   // your input"); that must NOT override the finished state, or the terminal
@@ -84,8 +96,21 @@ export function handleHookEvent(terminal: string, event: string): void {
 
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
+    if (Number(req.headers['content-length'] ?? 0) > MAX_BODY_BYTES) {
+      reject(new BodyTooLargeError());
+      return;
+    }
     const chunks: Buffer[] = [];
-    req.on('data', (c) => chunks.push(c as Buffer));
+    let size = 0;
+    req.on('data', (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES) {
+        req.removeAllListeners('data');
+        reject(new BodyTooLargeError());
+        return;
+      }
+      chunks.push(c);
+    });
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
@@ -124,6 +149,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       await handleSftpRequest(raw, res);
       return;
     }
+    // Claude Code pane control/inspection. Answered by the main process itself
+    // (not the renderer) so it still works when a pane's UI is stuck.
+    if ((req.url || '').startsWith('/agent')) {
+      await handleAgentPaneRequest(raw, res);
+      return;
+    }
     if ((req.url || '').startsWith('/hook')) {
       let hook: any = null;
       try { hook = JSON.parse(raw.toString('utf8') || '{}'); } catch { hook = null; }
@@ -133,6 +164,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     }
     res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
   } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      // Answer, then drop the connection so the rest of the body is never read.
+      try {
+        res.writeHead(413, { connection: 'close' }).end(() => req.destroy());
+      } catch {
+        req.destroy();
+      }
+      return;
+    }
     console.error('[activity] receiver error:', (err as Error).message);
     try {
       res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
@@ -152,12 +192,20 @@ export function startActivityReceiver(): void {
   server.listen(RECEIVER_PORT, bindHost, () => {
     console.log(`[activity] receiver on http://${bindHost}:${RECEIVER_PORT}`);
   });
+  // The companion browser extension rides the same loopback server, upgraded to
+  // a WebSocket on EXT_WS_PATH (extension origins + a pairing token only).
+  startExtensionChannel(server);
 
   // Safety sweep: clear a working terminal gone silent far longer than any real
   // turn (missed stop event / crashed agent).
   sweepTimer = setInterval(() => {
     const now = Date.now();
     for (const [id, s] of stateByTerminal) {
+      // A closed terminal leaves the owner map; forget its activity too.
+      if (!isKnownTerminal(id)) {
+        stateByTerminal.delete(id);
+        continue;
+      }
       if (s.state !== 'idle' && now - s.lastEventAt > SAFETY_IDLE_MS) {
         setState(id, 'idle');
       }
@@ -181,6 +229,7 @@ export function addReceiverInterface(ip: string): void {
 }
 
 export function stopActivityReceiver(): void {
+  stopExtensionChannel();
   server?.close();
   server = null;
   wslServer?.close();

@@ -16,20 +16,25 @@ export function listSchemas(db: Database.Database): SQLSchemaTree[] {
     .prepare(`select name, type from sqlite_master where type in ('table','view') and name not like 'sqlite_%' order by name asc`)
     .all() as Array<{ name: string; type: string }>;
 
+  // Row estimates come from sqlite_stat1 (written by ANALYZE) when it exists. A
+  // count(*) per table is a full scan, and better-sqlite3 runs on the main
+  // process thread — on a large file every refresh froze every terminal.
+  const estimates = new Map<string, number>();
+  try {
+    const stats = db.prepare(`select tbl, stat from sqlite_stat1`).all() as Array<{ tbl: string; stat: string }>;
+    for (const r of stats) {
+      const n = parseInt(r.stat, 10);
+      if (Number.isFinite(n)) estimates.set(r.tbl, Math.max(estimates.get(r.tbl) ?? 0, n));
+    }
+  } catch {
+    /* never analyzed — no estimates */
+  }
+
   const table: SQLSchemaObject[] = [];
   const view: SQLSchemaObject[] = [];
   for (const o of objects) {
     if (o.type === 'view') view.push({ name: o.name });
-    else {
-      let rowEstimate: number | undefined;
-      try {
-        const r = db.prepare(`select count(*) as c from "${o.name}"`).get() as { c: number };
-        rowEstimate = r.c;
-      } catch {
-        /* best effort */
-      }
-      table.push({ name: o.name, rowEstimate });
-    }
+    else table.push({ name: o.name, rowEstimate: estimates.get(o.name) });
   }
 
   const categories: SQLSchemaCategory[] = [
@@ -47,7 +52,7 @@ export function listColumns(db: Database.Database): SQLColumnInfo[] {
 
   const out: SQLColumnInfo[] = [];
   for (const t of tables) {
-    const cols = db.prepare(`pragma table_info("${t.name}")`).all() as Array<{
+    const cols = db.prepare(`select * from pragma_table_info(?)`).all(t.name) as Array<{
       cid: number;
       name: string;
       type: string;
@@ -71,8 +76,10 @@ export function listColumns(db: Database.Database): SQLColumnInfo[] {
   return out;
 }
 
+// Pragmas go through their table-valued forms so names are bound, not spliced
+// into `"..."` — a table name containing a quote broke every listing.
 export function getPrimaryKey(db: Database.Database, table: string): string[] {
-  const cols = db.prepare(`pragma table_info("${table}")`).all() as Array<{ name: string; pk: number }>;
+  const cols = db.prepare(`select * from pragma_table_info(?)`).all(table) as Array<{ name: string; pk: number }>;
   return cols
     .filter((c) => c.pk > 0)
     .sort((a, b) => a.pk - b.pk)
@@ -81,11 +88,11 @@ export function getPrimaryKey(db: Database.Database, table: string): string[] {
 
 export function listIndexes(db: Database.Database, table: string): SQLIndexInfo[] {
   try {
-    const list = db.prepare(`pragma index_list("${table}")`).all() as Array<{
+    const list = db.prepare(`select * from pragma_index_list(?)`).all(table) as Array<{
       seq: number; name: string; unique: number; origin: string; partial: number;
     }>;
     return list.map((ix) => {
-      const cols = db.prepare(`pragma index_info("${ix.name}")`).all() as Array<{ seqno: number; cid: number; name: string }>;
+      const cols = db.prepare(`select * from pragma_index_info(?)`).all(ix.name) as Array<{ seqno: number; cid: number; name: string }>;
       return {
         name: ix.name,
         columns: cols.map((c) => c.name),
@@ -102,13 +109,13 @@ export function listKeys(db: Database.Database, table: string): SQLKeyInfo[] {
   const keys: SQLKeyInfo[] = [];
   // Primary key from table_info.
   try {
-    const pkCols = (db.prepare(`pragma table_info("${table}")`).all() as Array<{ name: string; pk: number }>)
+    const pkCols = (db.prepare(`select * from pragma_table_info(?)`).all(table) as Array<{ name: string; pk: number }>)
       .filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
     if (pkCols.length) keys.push({ name: 'PRIMARY', type: 'primary', columns: pkCols });
   } catch { /* best effort */ }
   // Foreign keys from foreign_key_list.
   try {
-    const fks = db.prepare(`pragma foreign_key_list("${table}")`).all() as Array<{
+    const fks = db.prepare(`select * from pragma_foreign_key_list(?)`).all(table) as Array<{
       id: number; seq: number; table: string; from: string; to: string;
     }>;
     const byId = new Map<number, SQLKeyInfo>();

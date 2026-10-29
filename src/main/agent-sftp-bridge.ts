@@ -1,6 +1,6 @@
 import type { ServerResponse } from 'node:http';
 import { BrowserWindow, ipcMain, webContents } from 'electron';
-import { BROWSER_TOKEN } from './agent-browser-bridge';
+import { isAgentToken } from './agent-browser-bridge';
 import { isAgentSftpControlEnabled, isAgentSftpWriteEnabled } from './local-shell-manager';
 
 // ─── Agent SFTP bridge ───────────────────────────────────────────────────────
@@ -142,7 +142,7 @@ export async function handleSftpRequest(raw: Buffer, res: ServerResponse): Promi
     return;
   }
 
-  if (parsed.token !== BROWSER_TOKEN) {
+  if (!isAgentToken(parsed?.token)) {
     reply(403, { ok: false, error: 'unauthorized' });
     return;
   }

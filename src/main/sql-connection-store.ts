@@ -1,11 +1,12 @@
 import { app, safeStorage } from 'electron';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, chmodSync } from 'node:fs';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import type { SavedSQLConnection, SQLConnectionConfig } from '../shared/types';
 import { getDialectCapabilities } from '../shared/dialects';
 import { fallbackKey, legacyFallbackKey } from './fallback-key';
+import { writeFileAtomicSync } from './atomic-write';
 
 const STORE_FILE = 'saved-sql-connections.json';
 const ALGO = 'aes-256-gcm';
@@ -105,7 +106,7 @@ export class SQLConnectionStore {
       mkdirSync(dir, { recursive: true });
     }
     // 0600: the file holds encrypted credentials — never world-readable.
-    writeFileSync(this.filePath, JSON.stringify(this.connections, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    writeFileAtomicSync(this.filePath, JSON.stringify(this.connections, null, 2), { mode: 0o600 });
   }
 
   private toPublic(c: PersistedSavedSQLConnection): SavedSQLConnection {

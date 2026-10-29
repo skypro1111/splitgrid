@@ -1,9 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type { AppSettings, AuthSession, FastChatSettings, FastChatReasoningEffort, QuickChatHotkey, SavedConnection, SSHConnectionConfig, ShellOption, TerminalRendererKind } from '../../shared/types';
 import { SOUNDS, SILENT_SOUND_ID, playSound } from '../sounds';
 import { SSHConnectionManager } from './SSHConnectionManager';
 import { Card, Row, Hint, Toggle, Segmented, PInput, PSelect, PTextarea, HotkeyRecorder, ghostBtnStyle } from './settings-ui';
+import { AgentChromeSettings } from './AgentChromeSettings';
 import { defaultQuickChatHotkey, defaultFocusModeHotkey } from '../../shared/quick-chat-hotkey';
+import {
+  BACKGROUND_PRESETS,
+  DEFAULT_BACKGROUND_COLOR,
+  normalizeBackgroundColor,
+  parseBackgroundColor,
+} from '../../shared/background-theme';
+import { applyBackgroundTheme } from '../theme';
+import { rebaseSettingsDraft, settingsPatch } from './settingsDraft';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -16,10 +25,81 @@ interface SettingsModalProps {
   onSaveConnection: (config: Omit<SSHConnectionConfig, 'id'>) => Promise<SavedConnection>;
   onUpdateConnection: (id: string, config: Omit<SSHConnectionConfig, 'id'>) => Promise<SavedConnection>;
   onDeleteConnection: (id: string) => Promise<void>;
+  onDuplicateConnection: (id: string) => Promise<SavedConnection>;
   onTestConnection: (id: string) => Promise<{ ok: boolean; error?: string }>;
 }
 
 type Tab = 'general' | 'ssh' | 'fastChat' | 'account';
+
+// Background picker: the curated presets plus a free colour. Whatever is picked
+// is the base the whole UI is derived from, so it is clamped into a dark range
+// (parseBackgroundColor) before it ever reaches the draft.
+const BackgroundPicker: React.FC<{ value: string; onChange: (color: string) => void }> = ({ value, onChange }) => {
+  const current = normalizeBackgroundColor(value);
+  const [text, setText] = useState(current);
+  // Follow the draft when it changes elsewhere (preset click, Reset, reopen).
+  useEffect(() => { setText(current); }, [current]);
+
+  const typed = parseBackgroundColor(text);
+  const commit = () => { if (typed) onChange(typed); else setText(current); };
+
+  const swatch = (color: string, label: string, selected: boolean, onClick: () => void): React.ReactNode => (
+    <button
+      key={label}
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      aria-pressed={selected}
+      style={{
+        width: 30, height: 30, borderRadius: 9, background: color, cursor: 'pointer', padding: 0,
+        border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+        boxShadow: selected ? '0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent)' : 'none',
+        transition: 'box-shadow 0.12s, border-color 0.12s',
+      }}
+    />
+  );
+
+  return (
+    <>
+      <Row label="Background" align="flex-start">
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {BACKGROUND_PRESETS.map((p) =>
+            swatch(p.color, p.label, normalizeBackgroundColor(p.color) === current, () => onChange(p.color)))}
+        </div>
+      </Row>
+      <Row label="Custom colour">
+        <input
+          type="color"
+          value={current}
+          onChange={(e) => onChange(e.target.value)}
+          aria-label="Custom background colour"
+          style={{
+            width: 34, height: 34, padding: 2, borderRadius: 9, cursor: 'pointer',
+            background: 'var(--bg-primary)', border: '1px solid var(--border)',
+          }}
+        />
+        <PInput
+          value={text}
+          onValue={setText}
+          onBlur={commit}
+          onEnter={commit}
+          placeholder={DEFAULT_BACKGROUND_COLOR}
+          style={{ width: 110, fontFamily: 'var(--font-mono)' }}
+        />
+        {typed && typed !== current && (
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Press Enter to apply</span>
+        )}
+      </Row>
+      <Hint tone={typed ? 'muted' : 'error'}>
+        {typed
+          ? <>Panels, inputs, borders, terminals and editors are all derived from this colour — it is
+            nudged into a dark range so the light text and overlays stay readable.</>
+          : <>Not a colour. Use a hex value like <code>{DEFAULT_BACKGROUND_COLOR}</code>.</>}
+      </Hint>
+    </>
+  );
+};
 
 const RELAY_URL = 'https://stream.splitgrid.dev';
 
@@ -176,6 +256,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onSaveConnection,
   onUpdateConnection,
   onDeleteConnection,
+  onDuplicateConnection,
   onTestConnection,
 }) => {
   const [tab, setTab] = useState<Tab>(initialTab ?? 'general');
@@ -185,6 +266,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // confirmation. (Per-workspace notify overrides live in Workspace Settings.)
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [saved, setSaved] = useState(false);
+  // The settings the draft is based on. When they change underneath us (this
+  // window's own save, or another environment's), rebase the draft so untouched
+  // fields follow along and Save writes back only what was edited here.
+  const draftBaseRef = useRef(settings);
+  useEffect(() => {
+    const base = draftBaseRef.current;
+    if (base === settings) return;
+    draftBaseRef.current = settings;
+    setDraft((d) => rebaseSettingsDraft(d, base, settings));
+  }, [settings]);
 
   const set = (patch: Partial<AppSettings>) => { setDraft((d) => ({ ...d, ...patch })); setSaved(false); };
 
@@ -223,12 +314,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     !!draft.muteAll !== !!settings.muteAll ||
     (draft.windowsDefaultShell ?? '') !== (settings.windowsDefaultShell ?? '') ||
     (draft.terminalRenderer ?? 'xterm') !== (settings.terminalRenderer ?? 'xterm') ||
+    normalizeBackgroundColor(draft.backgroundColor) !== normalizeBackgroundColor(settings.backgroundColor) ||
     !!draft.agentIntegrations !== !!settings.agentIntegrations ||
     !!draft.agentTerminalControl !== !!settings.agentTerminalControl ||
     !!draft.agentSqlControl !== !!settings.agentSqlControl ||
     !!draft.agentSftpControl !== !!settings.agentSftpControl ||
     !!draft.agentSftpWrite !== !!settings.agentSftpWrite ||
     !!draft.agentSqlWrite !== !!settings.agentSqlWrite ||
+    !!draft.agentChromeControl !== !!settings.agentChromeControl ||
+    !!draft.agentChromeWrite !== !!settings.agentChromeWrite ||
     !!draft.terminalMouseScroll !== !!settings.terminalMouseScroll ||
     fcCanon(draft.fastChat) !== fcCanon(settings.fastChat) ||
     !hotkeyEq(currentHotkey, settings.quickChatHotkey ?? defaultHotkey) ||
@@ -238,20 +332,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const dirty = appDirty;
 
   const save = () => {
-    onUpdateSettings({
-      ...draft,
-      fastChat: draft.fastChat
-        ? {
-            ...draft.fastChat,
-            baseUrl: draft.fastChat.baseUrl.trim(),
-            apiKey: draft.fastChat.apiKey.trim(),
-            model: draft.fastChat.model.trim(),
-            models: [...new Set((draft.fastChat.models ?? []).map((m) => m.trim()).filter(Boolean))],
-          }
-        : undefined,
-    });
+    const patch = settingsPatch(draftBaseRef.current, draft);
+    if (patch.fastChat) {
+      patch.fastChat = {
+        ...patch.fastChat,
+        baseUrl: patch.fastChat.baseUrl.trim(),
+        apiKey: patch.fastChat.apiKey.trim(),
+        model: patch.fastChat.model.trim(),
+        models: [...new Set((patch.fastChat.models ?? []).map((m) => m.trim()).filter(Boolean))],
+      };
+    }
+    onUpdateSettings(patch);
     setSaved(true);
   };
+
+  // Background colour previews live while the modal is open — picking a colour
+  // you can only judge after clicking Save would be guesswork. Closing without
+  // saving puts the persisted colour back.
+  useEffect(() => {
+    applyBackgroundTheme(draft.backgroundColor);
+  }, [draft.backgroundColor]);
+  const savedBackgroundRef = useRef(settings.backgroundColor);
+  savedBackgroundRef.current = settings.backgroundColor;
+  useEffect(() => () => { applyBackgroundTheme(savedBackgroundRef.current); }, []);
 
   // Available shells for the Windows default-shell picker (empty elsewhere).
   const [shells, setShells] = useState<ShellOption[]>([]);
@@ -298,7 +401,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }}
     >
       <div style={{
-        width: 720, maxWidth: '100%', height: '82vh', maxHeight: 660, background: 'var(--bg-surface)',
+        width: 1152, maxWidth: '100%', height: '82vh', maxHeight: 1056, background: 'var(--bg-surface)',
         border: '1px solid var(--border)', borderRadius: 16, display: 'flex', flexDirection: 'column',
         overflow: 'hidden', boxShadow: '0 24px 70px rgba(0, 0, 0, 0.55)',
       }}>
@@ -466,6 +569,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           ) : tab === 'general' ? (
             <div style={{ padding: 20 }}>
+              <Card title="Appearance" desc="One base colour for the whole app — every surface is derived from it.">
+                <BackgroundPicker
+                  value={draft.backgroundColor ?? DEFAULT_BACKGROUND_COLOR}
+                  onChange={(backgroundColor) => set({ backgroundColor })}
+                />
+              </Card>
+
               <Card title="Notifications" desc="Play a sound when a terminal finishes (Done) in a background workspace or while the window is unfocused.">
                 <Toggle
                   label="Mute all notifications"
@@ -616,6 +726,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     />
                   </div>
                 </div>
+                {/* Browser control brings its own live state (pairing code,
+                    connected extension, activated tabs), hence its own block. */}
+                <AgentChromeSettings
+                  integrations={!!draft.agentIntegrations}
+                  control={!!draft.agentChromeControl}
+                  write={!!draft.agentChromeWrite}
+                  savedControl={!!settings.agentChromeControl}
+                  onChange={set}
+                />
+              </Card>
+
+              <Card title="Claude Code pane">
+                <Row label="Binary path">
+                  <PInput
+                    value={draft.claudeBinaryPath ?? ''}
+                    onValue={(v) => set({ claudeBinaryPath: v })}
+                    placeholder="auto-detect (PATH, ~/.local/bin/claude, …)"
+                    grow
+                  />
+                </Row>
+                <Hint>
+                  Which <code>claude</code> the Claude Code pane runs. Leave empty to auto-detect.
+                  The pane drives that binary through the Claude Agent SDK, so it uses your own
+                  login, <code>CLAUDE.md</code>, skills and MCP servers — a new pane type alongside
+                  terminals, not a replacement for running <code>claude</code> in one.
+                </Hint>
               </Card>
             </div>
           ) : tab === 'account' ? (
@@ -627,6 +763,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               onSave={onSaveConnection}
               onUpdate={onUpdateConnection}
               onDelete={onDeleteConnection}
+              onDuplicate={onDuplicateConnection}
               onTest={onTestConnection}
               onClose={onClose}
             />

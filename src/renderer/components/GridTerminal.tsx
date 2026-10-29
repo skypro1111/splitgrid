@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
+import { PaneFocusButton } from './focusMode';
 import { Ghostty, Terminal, FitAddon, OSC8LinkProvider, UrlRegexProvider } from 'ghostty-web';
 // eslint-disable-next-line import/no-unresolved
 import ghosttyWasmUrl from 'ghostty-web/ghostty-vt.wasm?url';
@@ -12,6 +13,8 @@ import { dragHasPaths, getDroppedPaths } from './terminalDrop';
 import { pasteClipboardIntoTerminal } from './clipboardPaste';
 import { latinKey } from '../../shared/keyboard';
 import { promptStreamLogin } from './streamLoginPrompt';
+import { getBackgroundTheme, onBackgroundThemeChange } from '../theme';
+import type { DerivedBackgroundTheme } from '../../shared/background-theme';
 import type {
   TerminalRendererMetrics,
   TerminalSessionInfo,
@@ -70,8 +73,41 @@ type CachedTerminalInstance = {
 };
 
 const terminalCache = new Map<string, CachedTerminalInstance>();
+// Terminals mid wake-up repaint (rows-1 → rows). Their onResize must not reach
+// the PTY: that throwaway cycle would SIGWINCH a TUI twice per workspace switch.
+// Module-level (not a ref) because onResize is bound once per cached terminal.
+const wakingTerminals = new WeakSet<Terminal>();
 const TERMINAL_CACHE_TTL_MS = 30_000;
 const TERMINAL_FONT_FAMILY = "Menlo, Monaco, 'Courier New', monospace";
+
+// Ghostty paints on a canvas and can't inherit the CSS background, so the app's
+// base colour (and the ANSI black derived from it) is folded into the theme.
+function terminalThemeFor(theme: DerivedBackgroundTheme) {
+  return {
+    background: theme.background,
+    foreground: '#D4D4D4',
+    cursor: '#D4D4D4',
+    cursorAccent: '#5b51ec',
+    selectionBackground: '#264f78',
+    selectionForeground: '#ffffff',
+    black: theme.surfaces.input,
+    red: '#f14c4c',
+    green: '#15ac91',
+    yellow: '#e5b95c',
+    blue: '#4c9df3',
+    magenta: '#e567dc',
+    cyan: '#75d3ba',
+    white: '#D4D4D4',
+    brightBlack: '#505050',
+    brightRed: '#f14c4c',
+    brightGreen: '#15ac91',
+    brightYellow: '#e5b95c',
+    brightBlue: '#4c9df3',
+    brightMagenta: '#e567dc',
+    brightCyan: '#75d3ba',
+    brightWhite: '#D4D4D4',
+  };
+}
 
 type GhosttySelectionManagerLike = {
   selectionStart: { col: number; absoluteRow: number } | null;
@@ -346,6 +382,7 @@ export const GridTerminal: React.FC<GridTerminalProps> = ({
   const [hintAnchor, setHintAnchor] = useState<SshHintAnchor | null>(null);
   const lastFitAtRef = useRef(0);
   const pendingFitRafRef = useRef<number | null>(null);
+  const trailingFitTimerRef = useRef<number | null>(null);
   const metricsRef = useRef({
     renderWriteCalls: 0,
     renderWriteChars: 0,
@@ -408,7 +445,17 @@ export const GridTerminal: React.FC<GridTerminalProps> = ({
 
   const scheduleFit = (force = false) => {
     const now = performance.now();
-    if (!force && now - lastFitAtRef.current < FIT_THROTTLE_MS) return;
+    if (!force && now - lastFitAtRef.current < FIT_THROTTLE_MS) {
+      // Throttled — but the LAST resize of a burst (a splitter drag ending)
+      // must still be fitted, or the grid/PTY stay at the stale size.
+      if (trailingFitTimerRef.current === null) {
+        trailingFitTimerRef.current = window.setTimeout(() => {
+          trailingFitTimerRef.current = null;
+          scheduleFit(true);
+        }, FIT_THROTTLE_MS - (now - lastFitAtRef.current));
+      }
+      return;
+    }
     if (pendingFitRafRef.current !== null) {
       if (!force) return;
       cancelAnimationFrame(pendingFitRafRef.current);
@@ -484,30 +531,7 @@ export const GridTerminal: React.FC<GridTerminalProps> = ({
     if (!cached) {
       const terminal = new Terminal({
         ghostty: ghosttyReady,
-        theme: {
-          background: '#141414',
-          foreground: '#D4D4D4',
-          cursor: '#D4D4D4',
-          cursorAccent: '#5b51ec',
-          selectionBackground: '#264f78',
-          selectionForeground: '#ffffff',
-          black: '#1e1e1e',
-          red: '#f14c4c',
-          green: '#15ac91',
-          yellow: '#e5b95c',
-          blue: '#4c9df3',
-          magenta: '#e567dc',
-          cyan: '#75d3ba',
-          white: '#D4D4D4',
-          brightBlack: '#505050',
-          brightRed: '#f14c4c',
-          brightGreen: '#15ac91',
-          brightYellow: '#e5b95c',
-          brightBlue: '#4c9df3',
-          brightMagenta: '#e567dc',
-          brightCyan: '#75d3ba',
-          brightWhite: '#D4D4D4',
-        },
+        theme: terminalThemeFor(getBackgroundTheme()),
         fontFamily: TERMINAL_FONT_FAMILY,
         fontSize: zoomLevel,
         cursorBlink: true,
@@ -545,20 +569,21 @@ export const GridTerminal: React.FC<GridTerminalProps> = ({
         if (ev.type !== 'keydown') return false;
 
         // Saved-password offer active: Enter pastes it (Tabby-style); any other
-        // key dismisses the offer.
+        // key dismisses the offer. Return true (handled) — ghostty ignores
+        // preventDefault, so `false` would also send the \r / ESC to the PTY.
         if (pwActiveRef.current) {
           const plain = !ev.metaKey && !ev.ctrlKey && !ev.altKey;
           if (ev.key === 'Enter' && plain && !ev.shiftKey) {
             consumeTerminalShortcut(ev);
             pwActiveRef.current = false;
             pwApplyRef.current();
-            return false;
+            return true;
           }
           if (ev.key === 'Escape') {
             consumeTerminalShortcut(ev);
             pwActiveRef.current = false;
             pwDismissRef.current();
-            return false;
+            return true;
           }
           // Any other keypress — manual typing, Backspace, arrows, Ctrl-combos —
           // means the user is driving the line by hand. Drop the offer so a
@@ -643,6 +668,7 @@ export const GridTerminal: React.FC<GridTerminalProps> = ({
 
         // Windows/Linux: Ctrl+Shift+V pastes, Ctrl+Shift+C copies the selection
         // (plain Ctrl+V/Ctrl+C remain the control codes the shell expects).
+        // Return true (handled): `false` lets ghostty encode Ctrl+Shift+C as ^C.
         if (!isMac && ev.ctrlKey && ev.shiftKey && !ev.altKey && !ev.metaKey) {
           const key = latinKey(ev);
           if (key === 'v') {
@@ -652,14 +678,14 @@ export const GridTerminal: React.FC<GridTerminalProps> = ({
               (data) => sendData(sessionIdRef.current, data),
               sessionMetaRef.current,
             );
-            return false;
+            return true;
           }
           if (key === 'c') {
             const selection = getSelectionText(terminal);
             if (selection) {
               consumeTerminalShortcut(ev);
               void writeClipboardText(selection);
-              return false;
+              return true;
             }
           }
         }
@@ -783,7 +809,10 @@ export const GridTerminal: React.FC<GridTerminalProps> = ({
       });
 
       terminal.onData((data) => sendData(sessionIdRef.current, data));
-      terminal.onResize(({ cols, rows }) => resize(sessionIdRef.current, cols, rows));
+      terminal.onResize(({ cols, rows }) => {
+        if (wakingTerminals.has(terminal)) return;
+        resize(sessionIdRef.current, cols, rows);
+      });
 
       cached = {
         terminal,
@@ -963,6 +992,10 @@ export const GridTerminal: React.FC<GridTerminalProps> = ({
         cancelAnimationFrame(pendingFitRafRef.current);
         pendingFitRafRef.current = null;
       }
+      if (trailingFitTimerRef.current !== null) {
+        window.clearTimeout(trailingFitTimerRef.current);
+        trailingFitTimerRef.current = null;
+      }
       resizeObserver.disconnect();
       window.removeEventListener('focus', onWindowFocus);
       window.removeEventListener('resize', onWindowResize);
@@ -1007,6 +1040,18 @@ export const GridTerminal: React.FC<GridTerminalProps> = ({
     scheduleFit(true);
   }, [zoomLevel]);
 
+  // Follow the app background. Also runs on mount so a terminal restored from
+  // the cache (created under an older colour) repaints in the current one.
+  useEffect(() => {
+    const apply = (theme: DerivedBackgroundTheme) => {
+      const terminal = terminalRef.current;
+      if (!terminal || terminal.options.theme?.background === theme.background) return;
+      terminal.options.theme = terminalThemeFor(theme);
+    };
+    apply(getBackgroundTheme());
+    return onBackgroundThemeChange(apply);
+  }, [session.id]);
+
   // Workspace switches reparent the wrapper without remounting this component;
   // ghostty's renderer re-paints automatically once dimensions change, but we
   // still poke it through fit + a 1-row dim cycle in case the new wrapper has
@@ -1019,12 +1064,15 @@ export const GridTerminal: React.FC<GridTerminalProps> = ({
       if (!terminal || !containerEl) return;
       if (containerEl.clientWidth === 0 || containerEl.clientHeight === 0) return;
       if (terminal.rows < 2) return;
+      wakingTerminals.add(terminal);
       try {
         const { cols, rows } = terminal;
         terminal.resize(cols, rows - 1);
         terminal.resize(cols, rows);
       } catch {
         // Best effort.
+      } finally {
+        wakingTerminals.delete(terminal);
       }
     };
     wakeRenderer();
@@ -1116,6 +1164,7 @@ export const GridTerminal: React.FC<GridTerminalProps> = ({
         >
           x
         </button>
+        <PaneFocusButton containerId={containerId} />
         <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: statusColors[session.status] || 'var(--text-muted)', flexShrink: 0 }} />
         <EditableTerminalName customName={customName} autoLabel={session.label} onRename={onRename} />
         <span style={{ fontSize: '10px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>

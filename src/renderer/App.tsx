@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { PaneFocusButton } from './components/focusMode';
 import { useTerminals } from './hooks/useTerminals';
 import { useWorkspace } from './hooks/useWorkspace';
 import { useClaudeActivity } from './hooks/useClaudeActivity';
@@ -20,6 +21,7 @@ import { IDEPortal } from './components/ide';
 import { SettingsModal } from './components/SettingsModal';
 import { Card, Row, Toggle, PInput, PSelect, ghostBtnStyle, primaryBtnStyle } from './components/settings-ui';
 import { QuickChatPalette } from './components/QuickChatPalette';
+import { ToastContainer } from './components/Toast';
 import { SplitHorizontalIcon, SplitVerticalIcon } from './components/Icons';
 import type { Container, IDEContainerState, Workspace, WorkspaceSyncConfig, WorkspaceSyncTarget } from '../shared/types';
 import { useBrowserAgentBridge } from './hooks/useBrowserAgentBridge';
@@ -27,6 +29,7 @@ import { useTerminalAgentBridge } from './hooks/useTerminalAgentBridge';
 import { useSqlAgentBridge } from './hooks/useSqlAgentBridge';
 import { useSftpAgentBridge } from './hooks/useSftpAgentBridge';
 import { setCommandListener } from './utils/commandCapture';
+import { applyBackgroundTheme } from './theme';
 
 // After an automatic reconnect, ignore further drops on the same container for
 // this long — stops a flapping connection from auto-reconnecting in a tight loop.
@@ -46,6 +49,13 @@ interface WorkspaceSettingsDraft {
   notifySoundId: string | null;
   notifyVolume: number | null;
 }
+
+/**
+ * Whether the empty-container chooser offers a Claude Code pane. Off while the
+ * feature is shelved; the pane type, its sessions and its persistence are all
+ * untouched, so an existing pane keeps working and re-enabling is one flag.
+ */
+const SHOW_CLAUDE_CODE_PANE = false;
 
 const App: React.FC = () => {
   const terminals = useTerminals();
@@ -72,7 +82,8 @@ const App: React.FC = () => {
     workspaces: workspace.workspaces,
     createBrowserContainer: workspace.createBrowserContainer,
     updateContainerContent: workspace.updateContainerContent,
-    removeContainer: workspace.removeContainer,
+    // The caller's workspace may be a background one — not the active workspace.
+    removeContainer: workspace.removeContainerAnywhere,
   });
   // Agent terminal control: an agent in a splitgrid terminal can list/read/drive the
   // OTHER terminals in its workspace — and open/close terminals (local + SSH) —
@@ -128,6 +139,13 @@ const App: React.FC = () => {
     return () => { alive = false; off?.(); };
   }, []);
 
+  // App background: one picked base colour drives the whole surface ramp (CSS
+  // vars) and the terminal backgrounds. Applied whenever the setting changes —
+  // including right after settings load, which is why it isn't a mount-only effect.
+  useEffect(() => {
+    applyBackgroundTheme(appSettings.settings.backgroundColor);
+  }, [appSettings.settings.backgroundColor]);
+
   useEffect(() => {
     if (!showResources && !showSettings && !showAppSettings) return;
     const onKey = (e: KeyboardEvent) => {
@@ -168,7 +186,10 @@ const App: React.FC = () => {
         // Best effort — meta falls back to defaults if unresolved.
       }
     })();
-    return () => { cancelled = true; };
+    // An environment may be renamed from another window: drop the cache so
+    // resolveRelayEnv re-reads the name next time it is needed.
+    const unsubscribe = window.electronAPI.onEnvironmentStateChange(() => { relayEnvRef.current = null; });
+    return () => { cancelled = true; unsubscribe(); };
   }, []);
 
   // Resolve cached env info, lazily refreshing if not yet available.
@@ -328,13 +349,19 @@ const App: React.FC = () => {
       send(command);
       return;
     }
-    void window.electronAPI
-      .todoImagePaths(imagePaths, session?.shell?.startsWith('wsl:') ? 'wsl' : null)
-      .then((paths) => {
-        const attached = paths.map(shellQuote).join(' ');
-        send(attached ? `${command} ${attached} ` : command);
-      })
-      .catch(() => send(command));
+    // Guarded: an older preload without this method must not throw out of the
+    // click handler — an unhandled renderer error wipes the whole UI.
+    void (async () => {
+      let attached = '';
+      try {
+        const paths = await window.electronAPI
+          .todoImagePaths?.(imagePaths, session?.shell?.startsWith('wsl:') ? 'wsl' : null);
+        attached = (paths ?? []).map(shellQuote).join(' ');
+      } catch {
+        attached = ''; // fall back to the text alone
+      }
+      send(attached ? `${command} ${attached} ` : command);
+    })();
   }, [workspace.activeWorkspace, terminals, shellQuote]);
 
   // Feed heuristically-captured terminal commands into the environment recent feed.
@@ -523,11 +550,14 @@ const App: React.FC = () => {
         sqlState: {
           connectionId: null,
           savedConnectionId: null,
-          connectionName: 'Postgres',
+          connectionName: 'SQL Client',
           host: '127.0.0.1',
           port: 5432,
-          user: 'postgres',
-          database: 'postgres',
+          user: '',
+          // No database/schema until a connection is picked — pre-seeding
+          // 'postgres'/'public' made the pane force that database onto whatever
+          // connection was opened next.
+          database: '',
           ssl: false,
           tabs: [
             {
@@ -535,13 +565,13 @@ const App: React.FC = () => {
               type: 'query' as const,
               title: 'Query 1',
               query: 'SELECT now();',
-              database: 'postgres',
-              schema: 'public',
+              database: null,
+              schema: null,
               savedConnectionId: null,
             },
           ],
           activeTabId: defaultTabId,
-          schema: 'public',
+          schema: null,
           history: [],
         },
       });
@@ -603,9 +633,30 @@ const App: React.FC = () => {
     };
   }, [workspace]);
 
+  // Fill a container with the git repository browser. It opens on the workspace
+  // folder and asks for one only when the workspace has none.
+  const handleAddGit = useCallback((containerId: string) => {
+    const dir = workspace.activeWorkspace?.workingDirectory ?? null;
+    workspace.updateContainerContent(containerId, {
+      type: 'git',
+      label: 'Git',
+      gitState: dir ? { repoPath: dir } : {},
+    });
+  }, [workspace]);
+
   // Fill a container with an SFTP file-manager pane (it shows its own connection chooser).
   const handleAddSFTP = useCallback((containerId: string) => {
     workspace.updateContainerContent(containerId, { type: 'sftp', label: 'SFTP' });
+  }, [workspace]);
+
+  // Fill a container with a Claude Code pane. It runs the agent through the
+  // Agent SDK (not a PTY), rooted at the workspace's working directory.
+  const handleAddAgent = useCallback((containerId: string) => {
+    workspace.updateContainerContent(containerId, {
+      type: 'agent',
+      label: 'Claude Code',
+      agentCwd: workspace.activeWorkspace?.workingDirectory ?? undefined,
+    });
   }, [workspace]);
 
   // Fill a container with the embedded SSH connection picker (replaces the old
@@ -805,6 +856,7 @@ const App: React.FC = () => {
         .filter((s) => s.status === 'connected' || s.status === 'connecting')
         .map((s) => s.id)
     );
+    const knownSessionIds = new Set(terminals.sessions.map((s) => s.id));
     const terminalContainers = active.containers.filter(
       (c) => c.content.type === 'terminal',
     );
@@ -815,6 +867,15 @@ const App: React.FC = () => {
 
       const existingId = container.content.terminalId;
       if (existingId && liveSessionIds.has(existingId)) continue;
+      // A failed restore stays failed until the user hits Retry (which clears
+      // the error) — otherwise setting the error re-runs this effect and it
+      // retries in a tight loop.
+      if (container.content.connectionError) continue;
+      // A dropped SSH session this window still knows about is owned by the
+      // onSessionClosed auto-reconnect + the reconnect button, not by restore —
+      // restoring too would open a second connection and bypass the cooldown.
+      if (container.content.terminalType === 'ssh' && existingId && knownSessionIds.has(existingId)) continue;
+      if (autoReconnectInFlightRef.current.has(key)) continue;
 
       restoringTerminalContainersRef.current.add(key);
 
@@ -944,6 +1005,7 @@ const App: React.FC = () => {
               >
                 x
               </button>
+              <PaneFocusButton containerId={container.id} />
               <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', flex: 1 }}>
                 Empty Container
               </span>
@@ -984,6 +1046,14 @@ const App: React.FC = () => {
                 { label: 'Browser', icon: '\u2605', color: 'var(--accent-purple)', onClick: () => handleAddBrowser(container.id) },
                 { label: 'SQL', icon: 'db', color: 'var(--accent-blue)', onClick: () => handleAddSQL(container.id) },
                 { label: 'SFTP', icon: '⇆', color: 'var(--accent-orange)', onClick: () => handleAddSFTP(container.id) },
+                { label: 'Git', icon: '⑂', color: 'var(--accent-green)', onClick: () => handleAddGit(container.id) },
+                // Claude Code panes are parked: the entry point is hidden while
+                // the feature waits. Nothing behind it was removed — an existing
+                // pane still opens and runs — so flipping this back is the whole
+                // restore.
+                ...(SHOW_CLAUDE_CODE_PANE
+                  ? [{ label: 'Claude Code', icon: '✷', color: 'var(--accent-orange)', onClick: () => handleAddAgent(container.id) }]
+                  : []),
               ].map((item) => (
                 <button
                   key={item.label}
@@ -1030,7 +1100,7 @@ const App: React.FC = () => {
         />
       );
     },
-    [sessionMap, handleCloseContainer, handleAddLocal, handleAddSQL, handleAddSFTP, handleAddSSH, handleSSHConnect, terminals, handleBrowserUrlChange, workspace]
+    [sessionMap, handleCloseContainer, handleAddLocal, handleAddSQL, handleAddSFTP, handleAddGit, handleAddAgent, handleAddSSH, handleSSHConnect, terminals, handleBrowserUrlChange, workspace]
   );
 
   const handleReconnectContainer = useCallback(
@@ -1175,15 +1245,6 @@ const App: React.FC = () => {
     return rowsByWorkspace;
   }, [allSessionsMap, workspace.workspaces]);
 
-  // Clear claude response notifications when switching to a workspace
-  useEffect(() => {
-    if (!workspace.activeWorkspace) return;
-    const sessionIds = workspace.activeWorkspace.containers
-      .map(c => c.content.terminalId)
-      .filter((id): id is string => !!id);
-    if (sessionIds.length > 0) terminals.clearClaudeResponsesForSessions(sessionIds);
-  }, [workspace.activeWorkspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // Update window title to active workspace name (visible in macOS Mission Control / Dock)
   useEffect(() => {
     const name = workspace.activeWorkspace?.name;
@@ -1297,9 +1358,22 @@ const App: React.FC = () => {
       } catch (e) {
         console.error('record recent failed', e);
       }
+      // Kill its terminals like closing each pane would — otherwise the PTYs
+      // (dev servers holding ports, SIGSTOPped trees of a frozen workspace) keep
+      // running invisibly until the window closes. Thaw first so the stopped
+      // processes can actually handle the hangup.
+      const sessionIds = ws.containers
+        .map((c) => (c.content.type === 'terminal' ? c.content.terminalId : undefined))
+        .filter((x): x is string => !!x);
+      if (sessionIds.length > 0) {
+        if (ws.frozen) {
+          try { await window.electronAPI.unfreezeWorkspace(sessionIds); } catch (e) { console.error('unfreeze failed', e); }
+        }
+        await Promise.allSettled(sessionIds.map((sid) => terminals.closeSession(sid)));
+      }
     }
     workspace.deleteWorkspace(id);
-  }, [workspace.workspaces, workspace.deleteWorkspace]);
+  }, [workspace.workspaces, workspace.deleteWorkspace, terminals.closeSession]);
 
   const handleOpenRecentWorkspace = useCallback((ws: Workspace) => {
     workspace.addWorkspace(ws);
@@ -1893,6 +1967,7 @@ const App: React.FC = () => {
           onSaveConnection={terminals.saveConnection}
           onUpdateConnection={terminals.updateConnection}
           onDeleteConnection={terminals.deleteSavedConnection}
+          onDuplicateConnection={terminals.duplicateConnection}
           onTestConnection={terminals.testSavedConnection}
         />
       )}
@@ -1992,6 +2067,9 @@ const App: React.FC = () => {
         resumeGraceMs={(appSettings.settings.quickChatResumeGraceSec ?? 300) * 1000}
         onOpenSettings={() => { setShowQuickChat(false); setAppSettingsTab('fastChat'); setShowAppSettings(true); }}
       />
+      {/* App-wide toast host for toasts raised outside an IDE pane (e.g. the
+          terminal "Stream to web" sign-in prompt); IDE panes host their own. */}
+      <ToastContainer fixed />
     </div>
   );
 };

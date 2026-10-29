@@ -30,6 +30,10 @@ interface NetState {
   buffer: NetEntry[];
   index: Map<string, NetEntry>;
   handler: (event: unknown, method: string, params: Record<string, unknown>) => void;
+  /** Teardown hooks registered at attach, removed again on detach so repeated
+   *  start/stop cycles don't pile listeners onto the webContents. */
+  onDestroyed: () => void;
+  onDetached: () => void;
 }
 
 const states = new Map<number, NetState>();
@@ -92,10 +96,15 @@ function ensureAttached(wcId: number): void {
   wc.debugger.attach('1.3');
   const handler = (_event: unknown, method: string, params: Record<string, unknown>) => onMessage(wcId, method, params);
   wc.debugger.on('message', handler as never);
-  states.set(wcId, { buffer: [], index: new Map(), handler });
+  // Detach if the pane goes away while we're attached; and if something else
+  // detaches the debugger (devtools, a crash), drop our state so `list` stops
+  // reporting a frozen buffer as live capture.
+  const onDestroyed = () => detach(wcId);
+  const onDetached = () => detach(wcId);
+  states.set(wcId, { buffer: [], index: new Map(), handler, onDestroyed, onDetached });
+  wc.once('destroyed', onDestroyed);
+  wc.debugger.once('detach', onDetached);
   wc.debugger.sendCommand('Network.enable').catch(() => { /* best effort */ });
-  // Detach if the pane goes away while we're attached.
-  wc.once('destroyed', () => detach(wcId));
 }
 
 function detach(wcId: number): void {
@@ -104,9 +113,11 @@ function detach(wcId: number): void {
   states.delete(wcId);
   const wc = webContents.fromId(wcId);
   try {
-    if (wc && !wc.isDestroyed() && wc.debugger.isAttached()) {
+    if (wc && !wc.isDestroyed()) {
+      wc.removeListener('destroyed', st.onDestroyed);
+      wc.debugger.removeListener('detach', st.onDetached);
       wc.debugger.removeListener('message', st.handler as never);
-      wc.debugger.detach();
+      if (wc.debugger.isAttached()) wc.debugger.detach();
     }
   } catch { /* already gone */ }
 }

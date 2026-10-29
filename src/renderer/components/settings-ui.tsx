@@ -49,8 +49,10 @@ export const Toggle: React.FC<{ label: string; checked: boolean; onChange: (v: b
       <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{label}</div>
       {desc && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.55 }}>{desc}</div>}
     </div>
+    {/* aria-label: the visible label sits in a sibling div, so the switch itself
+        would otherwise have no accessible name. */}
     <button
-      type="button" role="switch" aria-checked={checked} disabled={disabled}
+      type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled}
       onClick={() => !disabled && onChange(!checked)}
       style={{
         width: 40, height: 23, borderRadius: 12, border: 'none', flexShrink: 0, position: 'relative', padding: 0, marginTop: 1,
@@ -87,14 +89,18 @@ export const PInput: React.FC<{
   max?: number;
   step?: number;
   style?: React.CSSProperties;
-}> = ({ value, onValue, type = 'text', placeholder, grow, min, max, step, style }) => {
+  /** Commit hooks for inputs whose value is validated/normalized on entry. */
+  onBlur?: () => void;
+  onEnter?: () => void;
+}> = ({ value, onValue, type = 'text', placeholder, grow, min, max, step, style, onBlur, onEnter }) => {
   const [focused, setFocused] = useState(false);
   return (
     <input
       type={type} value={value} placeholder={placeholder} min={min} max={max} step={step}
       onChange={(e) => onValue(e.target.value)}
       onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
+      onBlur={() => { setFocused(false); onBlur?.(); }}
+      onKeyDown={(e) => { if (e.key === 'Enter') onEnter?.(); }}
       style={controlStyle(focused, { ...(grow ? { flex: 1, minWidth: 0 } : {}), ...style })}
     />
   );

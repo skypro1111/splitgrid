@@ -10,11 +10,22 @@ import type {
   SQLTriggerInfo,
 } from '../../../shared/types';
 
+/**
+ * bigint columns arrive as strings (pg never narrows int8 to a JS number).
+ * reltuples is -1 for a table never analyzed — no estimate rather than "-1 rows".
+ */
+function countOrUndefined(value: string | number | null): number | undefined {
+  const n = typeof value === 'string' ? Number(value) : value;
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
 export async function listDatabases(client: Client, currentDatabase: string): Promise<SQLDatabaseInfo[]> {
-  const result = await client.query<{ datname: string; size_bytes: string; description: string | null }>(
+  const result = await client.query<{ datname: string; size_bytes: string | null; description: string | null }>(
     `select
        d.datname,
-       pg_database_size(d.datname)::text as size_bytes,
+       -- Sized only where we may connect: pg_database_size raises on any other
+       -- database (RDS's rdsadmin), which failed the whole listing.
+       case when has_database_privilege(d.oid, 'CONNECT') then pg_database_size(d.oid)::text end as size_bytes,
        pg_catalog.shobj_description(d.oid, 'pg_database') as description
      from pg_database d
      where d.datistemplate = false
@@ -22,7 +33,7 @@ export async function listDatabases(client: Client, currentDatabase: string): Pr
   );
   return result.rows.map((row) => ({
     name: row.datname,
-    sizeBytes: parseInt(row.size_bytes, 10) || 0,
+    sizeBytes: parseInt(row.size_bytes ?? '', 10) || 0,
     description: row.description,
     isCurrent: row.datname === currentDatabase,
   }));
@@ -41,8 +52,8 @@ export async function listSchemas(client: Client): Promise<SQLSchemaTree[]> {
     schema_name: string;
     name: string;
     kind: string;
-    row_estimate: number | null;
-    total_bytes: number | null;
+    row_estimate: string | null;
+    total_bytes: string | null;
   }>(
     `select
        n.nspname as schema_name,
@@ -103,8 +114,8 @@ export async function listSchemas(client: Client): Promise<SQLSchemaTree[]> {
     const bucket = ensureSchema(row.schema_name);
     const object: SQLSchemaObject = {
       name: row.name,
-      rowEstimate: typeof row.row_estimate === 'number' ? row.row_estimate : undefined,
-      totalBytes: typeof row.total_bytes === 'number' ? row.total_bytes : undefined,
+      rowEstimate: countOrUndefined(row.row_estimate),
+      totalBytes: countOrUndefined(row.total_bytes),
     };
     if (row.kind === 'r') bucket.table.push(object);
     else if (row.kind === 'v') bucket.view.push(object);

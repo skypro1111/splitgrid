@@ -1,0 +1,25 @@
+{
+  // Isolated from the root tsconfig on purpose: the root compiles for Electron
+  // (CommonJS, Node types), this compiles for a Chrome MV3 bundle. The root's
+  // `exclude` keeps `npm run typecheck` out of here.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    // Only the Chrome APIs — pulling in @types/node here would let a service
+    // worker file reference Node globals that do not exist at runtime.
+    "types": ["chrome"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "../src/shared/ext-protocol.ts"]
+}

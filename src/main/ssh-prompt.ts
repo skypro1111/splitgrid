@@ -20,8 +20,12 @@ export const PROMPT_RE =
 
 // How much of the buffer tail to inspect (a prompt line is short).
 const TAIL = 160;
+// Raw tail stripped before the TAIL cut. This runs on every output chunk against
+// the full (up to 100 KB) session buffer, so strip only a window generous enough
+// to survive escape sequences wrapping the prompt, not the whole buffer.
+const RAW_TAIL = 1024;
 
 /** True when the output buffer currently ends in a password/sudo prompt. */
 export function endsWithPasswordPrompt(buffer: string): boolean {
-  return PROMPT_RE.test(stripAnsi(buffer).slice(-TAIL));
+  return PROMPT_RE.test(stripAnsi(buffer.slice(-RAW_TAIL)).slice(-TAIL));
 }

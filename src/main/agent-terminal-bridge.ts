@@ -1,6 +1,6 @@
 import type { ServerResponse } from 'node:http';
 import { BrowserWindow, ipcMain, webContents } from 'electron';
-import { BROWSER_TOKEN } from './agent-browser-bridge';
+import { isAgentToken } from './agent-browser-bridge';
 
 // ─── Agent terminal bridge ───────────────────────────────────────────────────
 // An agent running inside a splitgrid terminal can inspect and drive the OTHER
@@ -147,7 +147,7 @@ export async function handleTerminalRequest(raw: Buffer, res: ServerResponse): P
     return;
   }
 
-  if (parsed.token !== BROWSER_TOKEN) {
+  if (!isAgentToken(parsed?.token)) {
     reply(403, { ok: false, error: 'unauthorized' });
     return;
   }

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { BrowserWindow, ipcMain, webContents } from 'electron';
-import { BROWSER_TOKEN } from './agent-browser-bridge';
+import { isAgentToken } from './agent-browser-bridge';
 import { isAgentSqlControlEnabled, isAgentSqlWriteEnabled } from './local-shell-manager';
 
 // ─── Agent SQL bridge ────────────────────────────────────────────────────────
@@ -178,7 +178,7 @@ export async function handleSqlRequest(raw: Buffer, res: ServerResponse): Promis
     return;
   }
 
-  if (parsed.token !== BROWSER_TOKEN) {
+  if (!isAgentToken(parsed?.token)) {
     reply(403, { ok: false, error: 'unauthorized' });
     return;
   }

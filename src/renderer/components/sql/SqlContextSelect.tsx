@@ -6,7 +6,9 @@ import { DialectIcon } from './DialectIcons';
 interface ConnItem { id: string; label: string; dialect: SQLDialect }
 
 interface SqlContextSelectProps {
-  /** Connections currently connected (the cascade's first level). */
+  /** Every saved connection (the cascade's first level). Picking one that is
+   * not live connects to it — that is the only way to leave the current
+   * connection, so the list must not be limited to the live one. */
   connections: ConnItem[];
   /** Active/target connection id + label (label shown even when disconnected). */
   connectionId: string;
@@ -64,6 +66,10 @@ export const SqlContextSelect: React.FC<SqlContextSelectProps> = ({
   const [dbPos, setDbPos] = useState<{ left: number; top: number } | null>(null);
   const [cache, setCache] = useState<Record<string, string[]>>({});
   const [loadingDb, setLoadingDb] = useState<string | null>(null);
+
+  // Schema lists are per-connection: database names repeat across servers, so a
+  // cache that outlives the connection would show the previous server's schemas.
+  useEffect(() => { setCache({}); setLoadingDb(null); }, [activeConnId]);
 
   const label = !connected
     ? (connectionLabel || 'Not connected')
@@ -125,6 +131,8 @@ export const SqlContextSelect: React.FC<SqlContextSelectProps> = ({
   const hoverConnection = (connId: string, el: HTMLElement) => {
     setHoverConn(connId);
     setHoverDb(null); setDbPos(null);
+    // Only the live connection has a flyout to position.
+    if (connId !== activeConnId) { setConnPos(null); return; }
     const r = el.getBoundingClientRect();
     setConnPos({ left: r.right + 2, top: r.top });
     // No-database-but-schema: prefetch the active db's schemas.
@@ -157,16 +165,22 @@ export const SqlContextSelect: React.FC<SqlContextSelectProps> = ({
     </button>
   );
 
-  // First-level (connections) menu.
+  // First-level (connections) menu. Only the live connection has database/schema
+  // levels to fly out to (we cannot list another server's databases without
+  // connecting), so any other row is a plain "connect to this" click.
   const renderConnections = () => {
-    if (connections.length === 0) return <div className="sql-select-empty">No active connections</div>;
-    return connections.map((c) => opt(
-      c.id, c.label, c.id === connectionId,
-      () => { if (!connHasFlyout) { onPick(c.id, '', ''); close(); } },
-      connHasFlyout,
-      (el) => hoverConnection(c.id, el),
-      <DialectIcon dialect={c.dialect} label={c.label} size={13} />,
-    ));
+    if (connections.length === 0) return <div className="sql-select-empty">No saved connections</div>;
+    return connections.map((c) => {
+      const isLive = c.id === activeConnId;
+      const flyout = isLive && connHasFlyout;
+      return opt(
+        c.id, c.label, c.id === connectionId,
+        () => { if (!flyout) { onPick(c.id, '', ''); close(); } },
+        flyout,
+        (el) => hoverConnection(c.id, el),
+        <DialectIcon dialect={c.dialect} label={c.label} size={13} />,
+      );
+    });
   };
 
   // Second-level flyout: databases, or (no-db dialects) schemas directly.
@@ -227,7 +241,7 @@ export const SqlContextSelect: React.FC<SqlContextSelectProps> = ({
         </div>,
         document.body,
       )}
-      {open && hoverConn && connPos && connHasFlyout && createPortal(
+      {open && hoverConn === activeConnId && connPos && connHasFlyout && createPortal(
         <div
           ref={sub1Ref}
           className="sql-select-menu sql-ctx-sub"
@@ -239,7 +253,7 @@ export const SqlContextSelect: React.FC<SqlContextSelectProps> = ({
         </div>,
         document.body,
       )}
-      {open && hoverConn && hoverDb && dbPos && showDatabase && showSchema && createPortal(
+      {open && hoverConn === activeConnId && hoverDb && dbPos && showDatabase && showSchema && createPortal(
         <div
           ref={sub2Ref}
           className="sql-select-menu sql-ctx-sub"

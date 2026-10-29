@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { PaneFocusButton } from './focusMode';
 import { SplitHorizontalIcon, SplitVerticalIcon } from './Icons';
 import { RemoteFileTable } from './sftp/RemoteFileTable';
 import { LocalFileTable } from './sftp/LocalFileTable';
@@ -77,9 +78,11 @@ export const SFTPPanel: React.FC<SFTPPanelProps> = ({
 
   const connectionId = content.sftpConnectionId;
 
-  // Fetch saved connections on mount.
+  // Fetch saved connections on mount, and again whenever any window changes them.
   useEffect(() => {
-    void window.electronAPI.getSavedConnections().then(setConns);
+    const load = () => { void window.electronAPI.getSavedConnections().then(setConns); };
+    load();
+    return window.electronAPI.onSavedConnectionsChanged(load);
   }, []);
 
   const target = useMemo<SftpTarget | null>(
@@ -98,10 +101,18 @@ export const SFTPPanel: React.FC<SFTPPanelProps> = ({
     setStatus('connecting');
     setError('');
     try {
-      const startDir = content.sftpRemotePath ?? (await window.electronAPI.sftpRealpath(target, '.'));
+      let startDir = content.sftpRemotePath ?? (await window.electronAPI.sftpRealpath(target, '.'));
       // Verify the session and that the start dir is listable (the gate); the
       // RemoteFileTable fetches its own listing once it mounts.
-      await window.electronAPI.sftpStatDir(target, startDir);
+      try {
+        await window.electronAPI.sftpStatDir(target, startDir);
+      } catch (err) {
+        // The remembered dir may be gone, or belong to another host — fall back
+        // to home rather than failing every Retry on the same path.
+        if (!content.sftpRemotePath) throw err;
+        startDir = await window.electronAPI.sftpRealpath(target, '.');
+        await window.electronAPI.sftpStatDir(target, startDir);
+      }
       setRemotePath(startDir);
       setStatus('ready');
       if (content.sftpRemotePath !== startDir) {
@@ -252,7 +263,9 @@ export const SFTPPanel: React.FC<SFTPPanelProps> = ({
   const handleChooseConnection = useCallback(
     (conn: SavedConnection) => {
       onRecordConnectionUse?.(conn.id);
-      onContentChange({ ...content, type: 'sftp', sftpConnectionId: conn.id, label: conn.label });
+      // A freshly picked connection starts at its own home, not at the remote
+      // dir remembered from whatever this pane was connected to before.
+      onContentChange({ ...content, type: 'sftp', sftpConnectionId: conn.id, label: conn.label, sftpRemotePath: undefined });
     },
     [content, onContentChange, onRecordConnectionUse],
   );
@@ -305,6 +318,7 @@ export const SFTPPanel: React.FC<SFTPPanelProps> = ({
           onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
           onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7'; }}
         />
+        <PaneFocusButton containerId={containerId} />
         <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {titleText}
         </span>

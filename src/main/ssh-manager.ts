@@ -36,6 +36,9 @@ interface SSHSession {
   // True between detecting a password prompt and the next non-prompt output,
   // so we offer the saved password once per prompt rather than on every chunk.
   promptPending?: boolean;
+  // Set by closeSession: the user closed it, so whatever event lands first is
+  // reported as a clean close (never as a drop that would trigger reconnect).
+  closing?: boolean;
 }
 
 interface SessionCallbacks {
@@ -70,6 +73,18 @@ export class SSHManager {
       // Set by hostVerifier when the server's key differs from the pinned one,
       // so client.on('error') can report a clear "host key changed" message.
       let hostKeyMismatch: { expected: string; actual: string } | null = null;
+      // The transport died (error or socket close). ssh2 then ALSO emits 'close'
+      // on every open channel (_chanMgr.cleanup), so the channel handler must not
+      // read that as a logout.
+      let transportLost = false;
+      // onClose fires once per session: a drop delivers client 'close' and then
+      // channel 'close', and a second (clean) report would remove the container.
+      let closeReported = false;
+      const reportClose = (exitedCleanly: boolean) => {
+        if (closeReported) return;
+        closeReported = true;
+        cb.onClose(config.id, { exitedCleanly: session.closing ? true : exitedCleanly });
+      };
       const info: SSHSessionInfo = {
         id: config.id,
         label: config.label,
@@ -144,8 +159,12 @@ export class SSHManager {
 
             channel.on('close', () => {
               info.status = 'disconnected';
-              // The remote shell closed its channel — a clean logout / `exit`.
-              cb.onClose(config.id, { exitedCleanly: true });
+              // The remote shell closed its channel — a clean logout / `exit` —
+              // unless the transport went first (then it's a drop).
+              reportClose(!transportLost);
+              // sshd doesn't hang up when the last channel closes (the client is
+              // expected to), so end the transport or it lingers on keepalive.
+              try { client.end(); } catch { /* already closing */ }
               this.sessions.delete(config.id);
             });
           }
@@ -153,6 +172,7 @@ export class SSHManager {
       });
 
       client.on('error', (err) => {
+        transportLost = true;
         info.status = 'error';
         const message = hostKeyMismatch
           ? hostKeyChangedMessage({ host: config.host, port: config.port, ...hostKeyMismatch })
@@ -163,13 +183,17 @@ export class SSHManager {
       });
 
       client.on('close', () => {
+        transportLost = true;
         if (info.status === 'connected' || info.status === 'connecting') {
           // Transport closed while still up (no channel close first) — an
           // unexpected drop, not a logout. Keep the container for reconnect.
           info.status = 'disconnected';
-          cb.onClose(config.id, { exitedCleanly: false });
+          reportClose(false);
         }
         this.sessions.delete(config.id);
+        // A server can drop the socket mid-auth without any 'error' (ssh2 only
+        // errors when no header was seen) — don't leave the caller hanging.
+        if (!settled) { settled = true; reject(new Error('Connection closed before the session was ready')); }
       });
 
       const connectConfig: Record<string, unknown> = {
@@ -266,6 +290,7 @@ export class SSHManager {
   closeSession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (session) {
+      session.closing = true;
       if (session.channel) {
         session.channel.close();
       }

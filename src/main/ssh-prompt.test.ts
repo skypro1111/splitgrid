@@ -42,6 +42,18 @@ describe('endsWithPasswordPrompt — should NOT detect', () => {
   }
 });
 
+describe('endsWithPasswordPrompt — large buffers', () => {
+  // Runs per chunk on the full ~100 KB session buffer, so only the tail is
+  // inspected; a prompt at the end must still be found, one far back must not.
+  const filler = '\x1b[32mbuild output line\x1b[0m\n'.repeat(4000);
+  it('detects an ANSI-wrapped prompt at the end of a ~100 KB buffer', () => {
+    expect(endsWithPasswordPrompt(filler + '\x1b[1m[sudo] password for ci:\x1b[0m ')).toBe(true);
+  });
+  it('ignores a prompt buried before the tail', () => {
+    expect(endsWithPasswordPrompt('[sudo] password for ci: ' + filler)).toBe(false);
+  });
+});
+
 describe('stripAnsi', () => {
   it('removes CSI colour codes', () => {
     expect(stripAnsi('\x1b[31mred\x1b[0m')).toBe('red');

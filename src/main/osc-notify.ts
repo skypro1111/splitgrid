@@ -15,8 +15,12 @@
 
 // Match the START of a notify OSC; the payload itself is irrelevant — presence
 // is the trigger. `99;` and `777;notify` are matched before the bare `9;` so
-// the alternation doesn't short-circuit on the leading 9.
-const NOTIFY_RE = /\x1b\](?:777;notify|99;|9;(?![0-9](?:;|\x07|\x1b\\)))/;
+// the alternation doesn't short-circuit on the leading 9. The `9;` form needs
+// the bytes that rule out progress (`9;<digit>` + `;`/BEL/ST) to be PRESENT: a
+// chunk ending in `ESC]9;` or `ESC]9;4` is undecided, not a hit — it rides the
+// carried tail until the next chunk settles it.
+// eslint-disable-next-line no-control-regex
+const NOTIFY_RE = /\x1b\](?:777;notify|99;|9;(?:[^0-9]|[0-9](?:[^;\x07\x1b]|\x1b[^\\])))/;
 
 // PTY data arrives in arbitrary chunks, so a sequence can be cut mid-pattern.
 // Keep a short tail per terminal, prepended to the next chunk, so a split prefix

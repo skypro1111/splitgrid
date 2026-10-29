@@ -64,7 +64,6 @@ export function useTerminals() {
   const activityQueueRef = useRef<Map<string, string>>(new Map());
   const activityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Set of session IDs that have unread Claude Code responses
-  const [claudeResponseSessionIds, setClaudeResponseSessionIds] = useState<Set<string>>(new Set());
 
   const detectActivity = useCallback((sessionId: string, data: string) => {
     const cleaned = stripTerminalControlSequences(data);
@@ -120,6 +119,14 @@ export function useTerminals() {
     })();
   }, []);
 
+  // Saved connections are shared by every environment window: refetch whenever
+  // any window (or main) changes them so this one never holds a stale list.
+  useEffect(() => window.electronAPI.onSavedConnectionsChanged(() => {
+    window.electronAPI.getSavedConnections()
+      .then(setSavedConnections)
+      .catch((e) => console.error('Failed to reload saved connections:', e));
+  }), []);
+
   // IPC event subscriptions
   useEffect(() => {
     const unsubData = window.electronAPI.onData((id, data) => {
@@ -149,24 +156,11 @@ export function useTerminals() {
       );
     });
 
-    const unsubClaude = window.electronAPI.onClaudeResponse((sessionId) => {
-      setClaudeResponseSessionIds(prev => new Set(prev).add(sessionId));
-      // Play notification sound
-      try {
-        const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YUoGAACAgICAgICBgYKCg4OEhYWGh4iIiYqLi4yNjY6Oj4+QkJGRkpKTk5OTlJSUlJSUlJSUk5OTk5KSkpKRkZGRkJCQj4+Pj46OjY2NjIyLi4qKiYmIiIeHhoaFhYSEg4OCgoGBgYCAgICA');
-        audio.volume = 0.3;
-        audio.play().catch(() => {});
-      } catch {
-        // Notification sound is best effort.
-      }
-    });
-
     return () => {
       unsubData();
       unsubReady();
       unsubClosed();
       unsubError();
-      unsubClaude();
       if (activityTimerRef.current) {
         clearTimeout(activityTimerRef.current);
         activityTimerRef.current = null;
@@ -265,6 +259,16 @@ export function useTerminals() {
     setSavedConnections((prev) => prev.filter((c) => c.id !== id));
   }, []);
 
+  const duplicateConnection = useCallback(async (id: string) => {
+    const copy = await window.electronAPI.duplicateConnection(id);
+    // Same slot main puts it in: right after the original.
+    setSavedConnections((prev) => {
+      const idx = prev.findIndex((c) => c.id === id);
+      return idx === -1 ? [...prev, copy] : [...prev.slice(0, idx + 1), copy, ...prev.slice(idx + 1)];
+    });
+    return copy;
+  }, []);
+
   const connectSaved = useCallback(async (savedId: string) => {
     const info = await window.electronAPI.connectSaved(savedId);
     setSessions((prev) => [...prev, info]);
@@ -273,22 +277,6 @@ export function useTerminals() {
 
   const testSavedConnection = useCallback(async (savedId: string) => {
     return window.electronAPI.testSavedConnection(savedId);
-  }, []);
-
-  const clearClaudeResponse = useCallback((sessionId: string) => {
-    setClaudeResponseSessionIds(prev => {
-      const next = new Set(prev);
-      next.delete(sessionId);
-      return next.size === prev.size ? prev : next;
-    });
-  }, []);
-
-  const clearClaudeResponsesForSessions = useCallback((sessionIds: string[]) => {
-    setClaudeResponseSessionIds(prev => {
-      const next = new Set(prev);
-      for (const id of sessionIds) next.delete(id);
-      return next.size === prev.size ? prev : next;
-    });
   }, []);
 
   return {
@@ -310,10 +298,8 @@ export function useTerminals() {
     saveConnection,
     updateConnection,
     deleteSavedConnection,
+    duplicateConnection,
     connectSaved,
     testSavedConnection,
-    claudeResponseSessionIds,
-    clearClaudeResponse,
-    clearClaudeResponsesForSessions,
   };
 }

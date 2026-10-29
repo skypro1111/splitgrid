@@ -1,4 +1,4 @@
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, type WriteStream } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import ExcelJS from 'exceljs';
 import type {
@@ -27,6 +27,8 @@ const EXPORT_PAGE_SIZE = 1000;
 export interface ExportDeps {
   execute: (id: string, sql: string, params?: unknown[]) => Promise<SQLQueryResult>;
   getDialect: (id: string) => SQLDialect;
+  /** The table's key columns, to give the pages a stable order. */
+  getPrimaryKey?: (id: string, schema: string, table: string) => Promise<string[]>;
 }
 
 /** A consumer that receives the column list once, then each page of rows. */
@@ -34,26 +36,32 @@ interface RowSink {
   begin(columns: string[]): void | Promise<void>;
   write(rows: Array<Record<string, unknown>>): void | Promise<void>;
   end(): void | Promise<void>;
+  /** Releases the file after a failed export (no-op once ended). */
+  abort(): void;
 }
 
 /* ----------------------------- full-table paging ----------------------------- */
 
-/** Build `SELECT * FROM <ref> LIMIT n OFFSET m` for the dialect (MSSQL needs the
- * OFFSET/FETCH form, which also requires an ORDER BY — order by the first column). */
+/** Build `SELECT * FROM <ref> [ORDER BY pk] LIMIT n OFFSET m` for the dialect.
+ * Without an ORDER BY the row order between pages is unspecified (Postgres's
+ * synchronized seqscans really do reorder), so a page could repeat or skip rows;
+ * the key gives every page the same order. MSSQL needs the OFFSET/FETCH form,
+ * which requires an ORDER BY — the key, else the first column. */
 function buildPageSql(
   dialect: SQLDialect,
   schema: string,
   table: string,
   limit: number,
   offset: number,
-  orderCol: string | null,
+  orderCols: string[],
 ): string {
   const ref = tableRefFor(schema, table, dialect);
+  const orderBy = orderCols.map((c) => quoteIdentFor(c, dialect)).join(', ');
   if (dialect === 'mssql') {
-    const order = orderCol ? quoteIdentFor(orderCol, dialect) : '(SELECT NULL)';
+    const order = orderBy || '(SELECT NULL)';
     return `SELECT * FROM ${ref} ORDER BY ${order} OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY`;
   }
-  return `SELECT * FROM ${ref} LIMIT ${limit} OFFSET ${offset}`;
+  return `SELECT * FROM ${ref}${orderBy ? ` ORDER BY ${orderBy}` : ''} LIMIT ${limit} OFFSET ${offset}`;
 }
 
 /** Stream every row of a table to the sink, paging past the per-query cap.
@@ -69,15 +77,18 @@ async function streamTable(
   let offset = 0;
   let total = 0;
   let columns: string[] | null = null;
-  let orderCol: string | null = null;
+  const primaryKey = deps.getPrimaryKey
+    ? await deps.getPrimaryKey(connectionId, schema, table).catch(() => [] as string[])
+    : [];
+  let orderCols: string[] = primaryKey;
 
   // Probe one row first to learn the column list (and a stable ORDER BY col for MSSQL).
   for (;;) {
-    const sql = buildPageSql(dialect, schema, table, EXPORT_PAGE_SIZE, offset, orderCol);
+    const sql = buildPageSql(dialect, schema, table, EXPORT_PAGE_SIZE, offset, orderCols);
     const page = await deps.execute(connectionId, sql, []);
     if (columns === null) {
       columns = page.columns;
-      orderCol = page.columns[0] ?? null;
+      if (!orderCols.length && dialect === 'mssql' && page.columns[0]) orderCols = [page.columns[0]];
       await sink.begin(columns);
       // MSSQL needed orderCol for the very first page too — if we guessed wrong
       // (no columns), re-run is unnecessary because empty table → no rows.
@@ -105,14 +116,49 @@ function csvOptionsFrom(options: SQLExportOptions): CsvOptions {
   };
 }
 
+/**
+ * A write stream whose failure — EBUSY while Excel holds the file open, EACCES,
+ * a vanished folder — is kept and rethrown into the export. Left unheard, its
+ * 'error' event is an uncaught exception that takes the whole main process down.
+ */
+function openFileStream(filePath: string): { stream: WriteStream; failure: () => Error | null } {
+  const stream = createWriteStream(filePath, { encoding: 'utf-8' });
+  let failure: Error | null = null;
+  stream.on('error', (err) => { failure = err; });
+  return { stream, failure: () => failure };
+}
+
+/** Plain-text sink plumbing shared by CSV/JSON/SQL. */
+function textFile(filePath: string) {
+  const { stream, failure } = openFileStream(filePath);
+  return {
+    write(text: string) {
+      const err = failure();
+      if (err) throw err;
+      stream.write(text);
+    },
+    end() {
+      return new Promise<void>((resolve, reject) => {
+        const err = failure();
+        if (err) { reject(err); return; }
+        stream.once('error', reject);
+        stream.end(() => resolve());
+      });
+    },
+    abort() {
+      stream.destroy();
+    },
+  };
+}
+
 /** Incremental CSV writer (RFC-4180 lines, CRLF). */
 function makeCsvSink(filePath: string, options: SQLExportOptions): RowSink {
-  const stream = createWriteStream(filePath, { encoding: 'utf-8' });
+  const file = textFile(filePath);
   const csvOpts = csvOptionsFrom(options);
   let cols: string[] = [];
   let wroteAny = false;
   const writeLine = (line: string) => {
-    stream.write(wroteAny ? `\r\n${line}` : line);
+    file.write(wroteAny ? `\r\n${line}` : line);
     wroteAny = true;
   };
   return {
@@ -123,44 +169,40 @@ function makeCsvSink(filePath: string, options: SQLExportOptions): RowSink {
     write(rows) {
       for (const row of rows) writeLine(csvRow(cols, row, csvOpts));
     },
-    end() {
-      return new Promise<void>((resolve, reject) => {
-        stream.end((err?: Error | null) => (err ? reject(err) : resolve()));
-      });
-    },
+    end: file.end,
+    abort: file.abort,
   };
 }
 
 /** Incremental JSON-array writer (pretty-ish: one object per line). */
 function makeJsonSink(filePath: string): RowSink {
-  const stream = createWriteStream(filePath, { encoding: 'utf-8' });
+  const file = textFile(filePath);
   let cols: string[] = [];
   let wroteAny = false;
   return {
     begin(columns) {
       cols = columns;
-      stream.write('[');
+      file.write('[');
     },
     write(rows) {
       for (const row of rows) {
         const obj: Record<string, unknown> = {};
         for (const c of cols) obj[c] = row[c] ?? null;
-        stream.write(`${wroteAny ? ',' : ''}\n  ${JSON.stringify(obj)}`);
+        file.write(`${wroteAny ? ',' : ''}\n  ${JSON.stringify(obj)}`);
         wroteAny = true;
       }
     },
     end() {
-      stream.write(wroteAny ? '\n]\n' : ']\n');
-      return new Promise<void>((resolve, reject) => {
-        stream.end((err?: Error | null) => (err ? reject(err) : resolve()));
-      });
+      file.write(wroteAny ? '\n]\n' : ']\n');
+      return file.end();
     },
+    abort: file.abort,
   };
 }
 
 /** Incremental SQL-INSERT writer. */
 function makeSqlSink(filePath: string, options: SQLExportOptions, dialect: SQLDialect): RowSink {
-  const stream = createWriteStream(filePath, { encoding: 'utf-8' });
+  const file = textFile(filePath);
   const schema = options.table?.schema ?? null;
   const tableName = options.sqlTableName?.trim() || options.table?.name || 'exported_data';
   let cols: string[] = [];
@@ -168,25 +210,30 @@ function makeSqlSink(filePath: string, options: SQLExportOptions, dialect: SQLDi
     begin(columns) { cols = columns; },
     write(rows) {
       for (const row of rows) {
-        stream.write(`${sqlInsertStatement(schema, tableName, cols, row, dialect)}\n`);
+        file.write(`${sqlInsertStatement(schema, tableName, cols, row, dialect)}\n`);
       }
     },
-    end() {
-      return new Promise<void>((resolve, reject) => {
-        stream.end((err?: Error | null) => (err ? reject(err) : resolve()));
-      });
-    },
+    end: file.end,
+    abort: file.abort,
   };
 }
 
 /** Streaming XLSX writer (exceljs WorkbookWriter — keeps memory bounded for big
  * tables; rows are committed as they're appended). Header row styled bold. */
 function makeXlsxSink(filePath: string): RowSink {
-  const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, useStyles: true });
+  // Our own stream, not `filename`: exceljs only listens for its errors once it
+  // finalizes, so an open failure before then would go unheard (see openFileStream).
+  const { stream, failure } = openFileStream(filePath);
+  const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream, useStyles: true });
+  const check = () => {
+    const err = failure();
+    if (err) throw err;
+  };
   const sheet = workbook.addWorksheet('Export');
   let cols: string[] = [];
   return {
     begin(columns) {
+      check();
       cols = columns;
       if (cols.length) {
         const header = sheet.addRow(cols);
@@ -195,6 +242,7 @@ function makeXlsxSink(filePath: string): RowSink {
       }
     },
     write(rows) {
+      check();
       for (const row of rows) {
         const values = cols.map((c) => {
           const v = row[c];
@@ -206,8 +254,12 @@ function makeXlsxSink(filePath: string): RowSink {
       }
     },
     async end() {
+      check();
       sheet.commit();
       await workbook.commit();
+    },
+    abort() {
+      stream.destroy();
     },
   };
 }
@@ -245,8 +297,15 @@ export async function exportData(
     if (!connectionId) throw new Error('A live connection is required for a full-table export.');
     if (!options.table) throw new Error('No source table specified for a full-table export.');
     const sink = makeSink(options.filePath, options, dialect);
-    const rowCount = await streamTable(deps, connectionId, options.table.schema, options.table.name, sink);
-    return { ok: true, filePath: options.filePath, rowCount };
+    try {
+      const rowCount = await streamTable(deps, connectionId, options.table.schema, options.table.name, sink);
+      return { ok: true, filePath: options.filePath, rowCount };
+    } catch (err) {
+      // A failed page (statement timeout, dropped connection) must not leave the
+      // file handle open for the life of the process.
+      sink.abort();
+      throw err;
+    }
   }
 
   // current-view scope: serialize the inline rows.
@@ -256,9 +315,14 @@ export async function exportData(
   if (options.format === 'xlsx') {
     // Use the same streaming sink for consistency.
     const sink = makeXlsxSink(options.filePath);
-    await sink.begin(columns);
-    await sink.write(rows);
-    await sink.end();
+    try {
+      await sink.begin(columns);
+      await sink.write(rows);
+      await sink.end();
+    } catch (err) {
+      sink.abort();
+      throw err;
+    }
     return { ok: true, filePath: options.filePath, rowCount: rows.length };
   }
 

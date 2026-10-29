@@ -71,7 +71,11 @@ export function buildEditStatement(change: SQLEditChange, dialect: SQLDialect): 
   if (change.kind === 'insert') {
     const cols = Object.keys(change.values);
     if (cols.length === 0) {
-      // No explicit columns → let every column take its server default.
+      // No explicit columns → let every column take its server default. MySQL /
+      // MariaDB have no DEFAULT VALUES clause; an empty column list is their form.
+      if (dialect === 'mysql' || dialect === 'mariadb') {
+        return { sql: `INSERT INTO ${ref} () VALUES ()`, params: [] };
+      }
       return { sql: `INSERT INTO ${ref} DEFAULT VALUES`, params: [] };
     }
     const colSql = cols.map((c) => quoteIdent(c, dialect)).join(', ');

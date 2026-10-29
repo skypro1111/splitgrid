@@ -43,9 +43,21 @@ export class MySQLDriver implements SqlDriver {
         ? { rejectUnauthorized: config.host !== 'localhost' && config.host !== '127.0.0.1' && config.host !== '::1' }
         : undefined,
       connectTimeout: STATEMENT_TIMEOUT_MS,
-      dateStrings: false,
+      // DATE/DATETIME as the server's text: parsed into a local-zone JS Date and
+      // printed as UTC, a DATE shows as the day before east of UTC — and an edit
+      // echoing that value back in its WHERE matches nothing.
+      dateStrings: true,
       supportBigNumbers: true,
       bigNumberStrings: true,
+    });
+
+    // A server that drops an idle connection (wait_timeout, restart) emits
+    // 'error'; unheard, that is an uncaught exception that takes the whole app
+    // down. Drop the dead session instead.
+    let sessionId: string | null = null;
+    conn.on('error', (err: Error) => {
+      console.warn('[sql] mysql connection error:', err.message);
+      if (sessionId) this.sessions.delete(sessionId);
     });
 
     const [versionRows] = await conn.query('select version() as version');
@@ -63,6 +75,7 @@ export class MySQLDriver implements SqlDriver {
       serverVersion,
     };
     this.sessions.set(info.id, { id: info.id, conn, info });
+    sessionId = info.id;
     return info;
   }
 
@@ -159,7 +172,11 @@ export class MySQLDriver implements SqlDriver {
 
   async getDDL(id: string, schema: string, name: string, kind: SQLSchemaObjectKind): Promise<SQLObjectDDL> {
     const session = this.require(id);
-    const q = (object: string) => `SHOW CREATE ${object} \`${name}\``;
+    // Quoted (backticks doubled) and qualified by the object's own database —
+    // the session's current one can differ after a `USE`.
+    const ident = (s: string) => `\`${s.split('`').join('``')}\``;
+    const target = schema ? `${ident(schema)}.${ident(name)}` : ident(name);
+    const q = (object: string) => `SHOW CREATE ${object} ${target}`;
     let ddl = '';
     try {
       if (kind === 'view') {

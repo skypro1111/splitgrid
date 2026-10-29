@@ -1,10 +1,11 @@
 import { app } from 'electron';
 import path from 'node:path';
 import { watch, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, rmSync, statSync } from 'node:fs';
-import { BROWSER_TOKEN, processBrowserCommand, flattenBridgeResult } from './agent-browser-bridge';
+import { isAgentToken, processBrowserCommand, flattenBridgeResult } from './agent-browser-bridge';
 import { processTerminalCommand, flattenTerminalResult } from './agent-terminal-bridge';
 import { processSqlCommand, flattenSqlResult } from './agent-sql-bridge';
 import { processSftpCommand, flattenSftpResult } from './agent-sftp-bridge';
+import { processAgentPaneCommand, flattenAgentPaneResult } from './agent-pane-bridge';
 import { handleHookEvent } from './agent-activity-receiver';
 import { winPathToWsl } from './wsl-paths';
 
@@ -18,7 +19,7 @@ import { winPathToWsl } from './wsl-paths';
 // no IP churn.
 //
 // Protocol (under <userData>/wsl-bridge):
-//   req/<id>.json   {kind:'hook'|'browser'|'terminal'|'sql'|'sftp', terminal, token?, event?, argv?}
+//   req/<id>.json   {kind:'hook'|'browser'|'terminal'|'sql'|'sftp'|'agent', terminal, token?, event?, argv?}
 //                   written atomically (…tmp → rename) so we never read a partial.
 //   res/<id>.json   the JSON reply (browser only); the helper reads then deletes.
 // We watch req/, dispatch, and for browser write res/<id>.json. Stale files are
@@ -78,7 +79,7 @@ async function processReqFile(name: string): Promise<void> {
     if (msg.kind === 'browser') {
       const id = name.slice(0, -'.json'.length);
       let body: Record<string, unknown>;
-      if (msg.token !== BROWSER_TOKEN) {
+      if (!isAgentToken(msg.token)) {
         body = { ok: false, error: 'unauthorized' };
       } else {
         const argv = Array.isArray(msg.argv) ? msg.argv.filter((a): a is string => typeof a === 'string') : [];
@@ -105,7 +106,7 @@ async function processReqFile(name: string): Promise<void> {
     if (msg.kind === 'terminal') {
       const id = name.slice(0, -'.json'.length);
       let body: Record<string, unknown>;
-      if (msg.token !== BROWSER_TOKEN) {
+      if (!isAgentToken(msg.token)) {
         body = { ok: false, error: 'unauthorized' };
       } else {
         const argv = Array.isArray(msg.argv) ? msg.argv.filter((a): a is string => typeof a === 'string') : [];
@@ -127,7 +128,7 @@ async function processReqFile(name: string): Promise<void> {
     if (msg.kind === 'sftp') {
       const id = name.slice(0, -'.json'.length);
       let body: Record<string, unknown>;
-      if (msg.token !== BROWSER_TOKEN) {
+      if (!isAgentToken(msg.token)) {
         body = { ok: false, error: 'unauthorized' };
       } else {
         const argv = Array.isArray(msg.argv) ? msg.argv.filter((a): a is string => typeof a === 'string') : [];
@@ -157,13 +158,39 @@ async function processReqFile(name: string): Promise<void> {
     if (msg.kind === 'sql') {
       const id = name.slice(0, -'.json'.length);
       let body: Record<string, unknown>;
-      if (msg.token !== BROWSER_TOKEN) {
+      if (!isAgentToken(msg.token)) {
         body = { ok: false, error: 'unauthorized' };
       } else {
         const argv = Array.isArray(msg.argv) ? msg.argv.filter((a): a is string => typeof a === 'string') : [];
         body = flattenSqlResult(await processSqlCommand(terminal, argv));
         // Note: SQL results need no path translation (no screenshots). Export-file
         // path translation, if any, is a Phase B/C concern once dispatch exists.
+      }
+      const tmp = path.join(resDir, `.${id}.tmp`);
+      const fin = path.join(resDir, `${id}.json`);
+      try {
+        writeFileSync(tmp, JSON.stringify(body), 'utf8');
+        renameSync(tmp, fin);
+      } catch (err) {
+        safeUnlink(tmp);
+        console.error('[file-bridge] reply write failed:', (err as Error).message);
+      }
+      safeUnlink(reqPath);
+      return;
+    }
+
+    if (msg.kind === 'agent') {
+      const id = name.slice(0, -'.json'.length);
+      let body: Record<string, unknown>;
+      if (!isAgentToken(msg.token)) {
+        body = { ok: false, error: 'bad_token' };
+      } else {
+        const argv = Array.isArray(msg.argv) ? msg.argv.map((entry) => String(entry)) : [];
+        try {
+          body = flattenAgentPaneResult(await processAgentPaneCommand(argv));
+        } catch (error) {
+          body = { ok: false, error: 'bridge_error', message: (error as Error).message };
+        }
       }
       const tmp = path.join(resDir, `.${id}.tmp`);
       const fin = path.join(resDir, `${id}.json`);

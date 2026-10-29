@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { Client, type QueryResultRow } from 'pg';
+import { Client, types as pgTypes, type CustomTypesConfig, type QueryResultRow } from 'pg';
 import type {
   SQLConnectionConfig,
   SQLColumnInfo,
@@ -20,6 +20,19 @@ interface Session {
   client: Client;
   info: SQLConnectionInfo;
 }
+
+/**
+ * date / timestamp / timestamptz (and their arrays) stay as the server's text.
+ * pg's default parses them into a JS Date in the machine's local zone, which
+ * normalizeValue then prints as UTC — east of UTC a DATE shows as the day before,
+ * and an edit that echoes that value back in its WHERE matches nothing.
+ * Per client, so the global pg.types other code may rely on is left alone.
+ */
+const RAW_TEXT_OIDS = new Set([1082, 1114, 1184, 1182, 1115, 1185]);
+const typeParsers: CustomTypesConfig = {
+  getTypeParser: ((oid: number, format?: 'text' | 'binary') =>
+    RAW_TEXT_OIDS.has(oid) ? (value: string) => value : pgTypes.getTypeParser(oid, format)) as CustomTypesConfig['getTypeParser'],
+};
 
 /** PostgreSQL backend — behavior-identical to the legacy SQLManager. */
 export class PostgresDriver implements SqlDriver {
@@ -42,6 +55,16 @@ export class PostgresDriver implements SqlDriver {
         ? { rejectUnauthorized: config.host !== 'localhost' && config.host !== '127.0.0.1' && config.host !== '::1' }
         : false,
       statement_timeout: 30000,
+      types: typeParsers,
+    });
+
+    // A server that ends an idle session (restart, pg_terminate_backend,
+    // idle_session_timeout) makes the client emit 'error'; unheard, that is an
+    // uncaught exception that takes the whole app down. Drop the dead session.
+    let sessionId: string | null = null;
+    client.on('error', (err) => {
+      console.warn('[sql] postgres connection error:', err.message);
+      if (sessionId) this.sessions.delete(sessionId);
     });
 
     await client.connect();
@@ -59,6 +82,7 @@ export class PostgresDriver implements SqlDriver {
     };
 
     this.sessions.set(info.id, { id: info.id, client, info });
+    sessionId = info.id;
     return info;
   }
 

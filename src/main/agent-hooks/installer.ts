@@ -65,7 +65,7 @@ export function applyHooksToConfig(root: Record<string, any>, def: AgentHookDef,
     const kept = list.filter((e) => !isSplitGridOwned(e));
     const entry: NestedHookEntry = {
       ...(ev.matcher ? { matcher: '*' } : {}),
-      hooks: [{ type: 'command', command: hookCommand(ev.splitgridEvent, helperPath), timeout: def.timeoutMs }],
+      hooks: [{ type: 'command', command: hookCommand(ev.splitgridEvent, helperPath), timeout: def.timeoutSec }],
     };
     kept.push(entry);
     hooks[ev.agentEvent] = kept;

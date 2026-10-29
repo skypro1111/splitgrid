@@ -7,6 +7,10 @@ import { app, BrowserWindow, ipcMain, webContents } from 'electron';
 import { webviewFocusPreloadPath } from './agent-hooks/paths';
 import { handleNetworkOp } from './agent-browser-network';
 import { sendKey, printPdf, clipboardOp, setViewport, handleCookies, captureFullPage } from './agent-browser-extra';
+import { constantTimeEquals, isExtensionConnected, listExtensionSurfaces, runExtensionCommand } from './agent-browser-channel';
+import { parseArgv } from '../shared/browser-argv';
+import { EXT_ERRORS, isExtSurface } from '../shared/ext-protocol';
+import { routeTabCommand, type TabRoute } from './agent-browser-tab-route';
 
 // ─── Agent browser bridge ────────────────────────────────────────────────────
 // An agent running inside a splitgrid terminal drives its embedded <webview>
@@ -22,6 +26,12 @@ import { sendKey, printPdf, clipboardOp, setViewport, handleCookies, captureFull
 // `eval` runs arbitrary JS in a page on an external request, so every /browser
 // call must carry this token.
 export const BROWSER_TOKEN = randomBytes(24).toString('hex');
+
+/** Constant-time check of a request's token against the shared agent secret.
+ *  Every bridge (HTTP + WSL file bridge) gates on this, never on `===`. */
+export function isAgentToken(token: unknown): boolean {
+  return typeof token === 'string' && constantTimeEquals(token, BROWSER_TOKEN);
+}
 
 const REQUEST_TIMEOUT_MS = 35_000;
 
@@ -56,19 +66,23 @@ function resetScreenshotDir(): void {
   }
 }
 
-// Cap the scratch dir so a long session of screenshots doesn't grow unbounded.
-function pruneScreenshots(cap = 50): void {
+// Cap the scratch dir so a long session of screenshots/PDFs doesn't grow
+// unbounded. Files are named r<counter>.<ext>; order by the NUMBER — a plain
+// string sort puts r1000 before r950 and would delete the newest capture.
+// `keep` (the file just written, whose path is about to be handed back) is
+// never removed.
+function pruneScreenshots(keep: string, cap = 50): void {
   const dir = screenshotDir();
   try {
     const files = readdirSync(dir)
-      .filter((f) => f.endsWith('.png'))
-      .map((f) => path.join(dir, f));
-    if (files.length <= cap) return;
-    // readdir order is stable enough; drop the lexicographically-lowest (oldest
-    // reqId counter) until under cap.
-    files.sort();
-    for (const f of files.slice(0, files.length - cap)) {
-      try { rmSync(f, { force: true }); } catch { /* best effort */ }
+      .map((f) => ({ f, n: /^r(\d+)\.(png|pdf)$/.exec(f) }))
+      .filter((e): e is { f: string; n: RegExpExecArray } => e.n !== null)
+      .map((e) => ({ file: path.join(dir, e.f), n: Number(e.n[1]) }))
+      .filter((e) => e.file !== keep);
+    if (files.length < cap) return;
+    files.sort((a, b) => a.n - b.n);
+    for (const { file } of files.slice(0, files.length - cap + 1)) {
+      try { rmSync(file, { force: true }); } catch { /* best effort */ }
     }
   } catch { /* dir may not exist yet */ }
 }
@@ -91,6 +105,16 @@ function ownerWindow(terminal: string): BrowserWindow | null {
   if (!wc || wc.isDestroyed()) return null;
   const win = BrowserWindow.fromWebContents(wc);
   return win && !win.isDestroyed() ? win : null;
+}
+
+/**
+ * Is `terminal` one this app run created? Fails OPEN while no resolver is wired
+ * (early startup / tests). Used to drop unauthenticated /hook events for ids
+ * nobody owns, so a stray POST can't grow the activity map without bound.
+ */
+export function isKnownTerminal(terminal: string): boolean {
+  if (!ownerResolver) return true;
+  return ownerResolver(terminal) !== undefined;
 }
 
 function targetWindow(): BrowserWindow | null {
@@ -123,15 +147,79 @@ export function startBrowserBridge(): void {
 }
 
 /**
+ * Run one command against a browser TAB in the user's real browser (via the
+ * companion extension) instead of a renderer <webview> pane. The agent sees the
+ * same reply shape as for a pane — including a screenshot PATH, spilled from the
+ * base64 the extension returns.
+ */
+async function runTabCommand(surface: string, route: Exclude<TabRoute, { kind: 'renderer' }>): Promise<BridgeResult> {
+  if (route.kind === 'error') {
+    return { ok: false, error: route.error, data: { surface, message: route.message } };
+  }
+  // Distinguish "no browser is paired" from "that tab is gone" — the fix differs.
+  if (!isExtensionConnected()) {
+    return {
+      ok: false,
+      error: EXT_ERRORS.noExtension,
+      data: { surface, message: 'no browser extension is connected — pair one and activate a tab in the SplitGrid extension, or drop --target to use a browser pane' },
+    };
+  }
+
+  const res = await runExtensionCommand(surface, route.command);
+  const data = res.data ?? {};
+  if (!res.ok) return { ok: false, error: res.error || 'ext_failed', data: { surface, ...data } };
+
+  // `get url|title` is one `info` round-trip; hand back only the field asked for.
+  if (route.infoField) {
+    return { ok: true, data: { surface, [route.infoField]: data[route.infoField] ?? '' } };
+  }
+
+  // Screenshots arrive as base64 — spill to the same scratch dir the pane path
+  // uses so the agent always gets a readable path.
+  if (route.command.op === 'screenshot') {
+    const { pngBase64, ...rest } = data;
+    if (typeof pngBase64 !== 'string' || !pngBase64) {
+      return { ok: false, error: 'screenshot_failed', data: { surface, ...rest, message: 'the extension returned no image' } };
+    }
+    try {
+      const dir = screenshotDir();
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, `r${++reqCounter}.png`);
+      writeFileSync(file, Buffer.from(pngBase64, 'base64'));
+      pruneScreenshots(file);
+      return { ok: true, data: { surface, ...rest, screenshot: file } };
+    } catch (err) {
+      return { ok: false, error: 'screenshot_failed', data: { surface, screenshotError: (err as Error).message } };
+    }
+  }
+
+  return { ok: true, data: { surface, ...data, ...(route.extra ?? {}) } };
+}
+
+/**
  * Run one agent browser command: forward the argv to the renderer (which owns the
  * webviews), await the reqId-correlated reply, then post-process screenshots
  * (base64 → temp PNG path) and network ops (CDP in main). Returns the resolved
  * result. Transport-agnostic — used by both the HTTP endpoint and the WSL file
  * bridge. The caller is responsible for token validation.
+ *
+ * `--target tab:<client>.<tabId>` names a tab in the user's real browser rather
+ * than a pane: those commands are translated here and never reach the renderer.
  */
 export async function processBrowserCommand(terminal: string, argv: string[]): Promise<BridgeResult> {
   if (argv.length === 0) {
     return { ok: false, error: 'empty_command', data: { message: 'usage: splitgrid-browser <cmd> [args]' } };
+  }
+
+  // Read --target in MAIN to pick the surface kind. The CLI, the argv vocabulary
+  // and the skill are unchanged — a tab is just another target.
+  const parsed = parseArgv(argv);
+  const cmd = (parsed.positional[0] || '').toLowerCase();
+  if (parsed.target && isExtSurface(parsed.target)) {
+    const route = routeTabCommand(argv);
+    // `list`/`help`/`clipboard` mean the same thing on any surface, so they fall
+    // through to the renderer (and `list` merges the tabs in below).
+    if (route.kind !== 'renderer') return runTabCommand(parsed.target, route);
   }
 
   // Prefer the window that owns the calling terminal (so its workspace resolves
@@ -149,6 +237,26 @@ export async function processBrowserCommand(terminal: string, argv: string[]): P
     pendingById.set(reqId, { resolve, timer });
     win.webContents.send('browser:command', { reqId, terminal, argv });
   });
+
+  // `list` is answered by the renderer (it owns the panes); merge in the tabs the
+  // user has activated in the browser extension so ONE call discovers every
+  // surface an agent can target. Purely additive: existing entries keep their
+  // fields (id/url/title/owner/mine), so an agent parsing the old shape is fine,
+  // and a tab's `id` is exactly what you pass to --target.
+  if (result.ok && cmd === 'list' && Array.isArray(result.data?.browsers)) {
+    const panes = (result.data.browsers as Array<Record<string, unknown>>).map((b) => ({ kind: 'pane', ...b }));
+    const tabs = listExtensionSurfaces().map((t) => ({
+      kind: 'tab',
+      id: t.surface,
+      surface: t.surface,
+      url: t.url,
+      title: t.title,
+      browser: t.browser,
+      // The extension-side interaction switch: read-only tabs refuse eval/click.
+      writable: t.writable,
+    }));
+    result.data = { ...result.data, browsers: [...panes, ...tabs], extensionConnected: isExtensionConnected() };
+  }
 
   // Network capture runs in main (CDP debugger lives on the main-process
   // webContents). The renderer resolves the target pane and hands back its guest
@@ -196,6 +304,7 @@ export async function processBrowserCommand(terminal: string, argv: string[]): P
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
       const file = path.join(dir, `${reqId}.pdf`);
       result.data = { ...rest, ...(await printPdf(pdfWebContentsId as number, file)) };
+      pruneScreenshots(file);
     } catch (err) { result.data = { ...rest, error: (err as Error).message }; result.ok = false; }
   }
 
@@ -230,7 +339,7 @@ export async function processBrowserCommand(terminal: string, argv: string[]): P
         const file = path.join(dir, `${reqId}.png`);
         writeFileSync(file, png);
         result.data = { ...rest, screenshot: file, ...(fullPage ? { captured } : {}) };
-        pruneScreenshots();
+        pruneScreenshots(file);
       }
     } catch (err) {
       result.data = { ...rest, screenshotError: (err as Error).message };
@@ -263,7 +372,7 @@ export async function handleBrowserRequest(raw: Buffer, res: ServerResponse): Pr
     return;
   }
 
-  if (parsed.token !== BROWSER_TOKEN) {
+  if (!isAgentToken(parsed?.token)) {
     reply(403, { ok: false, error: 'unauthorized' });
     return;
   }

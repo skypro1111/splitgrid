@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseArgv, MAX_WAIT_MS } from './browserArgv';
+import { parseArgv, MAX_WAIT_MS } from './browser-argv';
 
 describe('parseArgv', () => {
   it('keeps positionals in order and defaults flags', () => {

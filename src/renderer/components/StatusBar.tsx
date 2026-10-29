@@ -158,6 +158,10 @@ export const StatusBar: React.FC<Props> = ({
     if (content.type === 'browser') {
       return { text: content.browserUrl ?? 'Browser' };
     }
+    if (content.type === 'agent') {
+      const cwd = content.agentCwd ?? ws.workingDirectory;
+      return { text: `Claude Code${cwd ? ` · ${cwd}` : ''}` };
+    }
     return null;
   })();
 

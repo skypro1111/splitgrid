@@ -17,9 +17,10 @@
 // Pure Node (no electron import) so it is unit-testable. The wrapped-secret
 // unwrap (needed only when credential-key.json is keychain-wrapped) is injected.
 import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { writeFileAtomicSync } from './atomic-write';
 
 const ALGO = 'aes-256-gcm';
 
@@ -114,7 +115,7 @@ export function rekeyUserDataDir(
     const before = counts.rekeyed;
     const out = rekeyNode(json, keys, dest, counts);
     if (counts.rekeyed !== before) {
-      writeFileSync(fp, JSON.stringify(out, null, 2), { encoding: 'utf-8', mode: 0o600 });
+      writeFileAtomicSync(fp, JSON.stringify(out, null, 2), { mode: 0o600 });
     }
   }
   return { ...counts, portable: true };

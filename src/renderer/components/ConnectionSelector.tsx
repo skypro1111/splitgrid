@@ -1,11 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import type { SavedConnection } from '../../shared/types';
+import { groupConnections, useConnectionGroups } from '../hooks/useConnectionGroups';
 
 // Shared saved-connection picker used by BOTH embedded pickers — the SSH
 // connect pane (SSHConnectPanel) and the SFTP connection chooser — so they look
 // and behave identically: a search box over label / user@host:port, a "Recently
 // used here" section on top (per-workspace recency), then "All connections",
-// all in a scrollable premium list. The parent owns the empty state (no saved
+// all in a scrollable premium list. Once any connection has a group, "All" is
+// split into collapsible group sections (fold state is shared with Settings and
+// remembered); a search temporarily expands every group that has a match. The parent owns the empty state (no saved
 // connections) and any surrounding chrome — this component assumes there is at
 // least one saved connection and fills its flex container.
 
@@ -34,6 +37,8 @@ export const ConnectionSelector: React.FC<ConnectionSelectorProps> = ({
 }) => {
   const [query, setQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
+  const { groups, collapsed, setCollapsed } = useConnectionGroups();
+  const searching = query.trim() !== '';
 
   const byId = useMemo(() => new Map(savedConnections.map((c) => [c.id, c])), [savedConnections]);
 
@@ -62,7 +67,20 @@ export const ConnectionSelector: React.FC<ConnectionSelectorProps> = ({
     return [...pinned, ...remaining];
   }, [savedConnections, recentSet, pinnedIds, byId, matches]);
 
-  const noMatches = recent.length === 0 && others.length === 0;
+  // Grouped view: every matching connection under its group (recent ones too, so
+  // a group always shows all its members), fresh ones floated to the top.
+  const hasGroups = useMemo(() => savedConnections.some((c) => c.group), [savedConnections]);
+  const groupSections = useMemo(() => {
+    if (!hasGroups) return [];
+    const pinnedSet = new Set(pinnedIds ?? []);
+    const ordered = [
+      ...savedConnections.filter((c) => pinnedSet.has(c.id)),
+      ...savedConnections.filter((c) => !pinnedSet.has(c.id)),
+    ].filter(matches);
+    return groupConnections(ordered, groups);
+  }, [hasGroups, savedConnections, pinnedIds, groups, matches]);
+
+  const noMatches = recent.length === 0 && (hasGroups ? groupSections.length === 0 : others.length === 0);
   const disabled = connectingId != null;
 
   const renderRow = (c: SavedConnection) => (
@@ -116,11 +134,25 @@ export const ConnectionSelector: React.FC<ConnectionSelectorProps> = ({
         ) : (
           <>
             {recent.length > 0 && <Section title="Recently used here">{recent.map(renderRow)}</Section>}
-            {others.length > 0 && (
-              <Section title={recent.length > 0 ? 'All connections' : 'Saved connections'}>
-                {others.map(renderRow)}
-              </Section>
-            )}
+            {hasGroups
+              ? groupSections.map((sec) => sec.name === null ? (
+                  <Section key="" title="Ungrouped">{sec.connections.map(renderRow)}</Section>
+                ) : (
+                  <Section
+                    key={sec.name}
+                    title={sec.name}
+                    count={sec.connections.length}
+                    collapsed={!searching && collapsed.has(sec.name)}
+                    onToggle={() => setCollapsed(sec.name!, !collapsed.has(sec.name!))}
+                  >
+                    {sec.connections.map(renderRow)}
+                  </Section>
+                ))
+              : others.length > 0 && (
+                  <Section title={recent.length > 0 ? 'All connections' : 'Saved connections'}>
+                    {others.map(renderRow)}
+                  </Section>
+                )}
           </>
         )}
       </div>
@@ -128,12 +160,32 @@ export const ConnectionSelector: React.FC<ConnectionSelectorProps> = ({
   );
 };
 
-const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
+// A titled block of rows. With `onToggle` the title becomes a fold toggle.
+const Section: React.FC<{
+  title: string;
+  children: React.ReactNode;
+  count?: number;
+  collapsed?: boolean;
+  onToggle?: () => void;
+}> = ({ title, children, count, collapsed = false, onToggle }) => (
   <div style={{ marginBottom: 12 }}>
-    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', padding: '4px 8px 8px' }}>
-      {title}
+    <div
+      onClick={onToggle}
+      role={onToggle ? 'button' : undefined}
+      aria-expanded={onToggle ? !collapsed : undefined}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 6,
+        fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px',
+        padding: '4px 8px 8px', cursor: onToggle ? 'pointer' : 'default', userSelect: 'none',
+      }}
+    >
+      {onToggle && (
+        <span style={{ display: 'inline-block', width: 10, transition: 'transform 0.12s', transform: collapsed ? 'rotate(-90deg)' : 'none' }}>▾</span>
+      )}
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
+      {count !== undefined && <span style={{ opacity: 0.6, fontWeight: 500 }}>{count}</span>}
     </div>
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>{children}</div>
+    {!collapsed && <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>{children}</div>}
   </div>
 );
 

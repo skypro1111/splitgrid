@@ -96,6 +96,7 @@ export const IDEPortal: React.FC<Props> = ({
   return createPortal(
     <IDE
       workspaceId={workspaceId}
+      containerId={containerId}
       rootPath={rootPath}
       zoomLevel={zoomLevel}
       onClose={onClose}

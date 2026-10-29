@@ -57,17 +57,28 @@ function imageFilesFrom(dt: DataTransfer | null): File[] {
   return out;
 }
 
+// Every electronAPI call in this file goes through here. A preload older than
+// this bundle (a stale install, or a dev reload against an already-running main
+// process) would otherwise throw a TypeError straight out of an event handler —
+// and ONE unhandled renderer error replaces the entire app with the boot-error
+// screen, which reads to the user as a crash. Missing image support has to
+// degrade to "no thumbnail", never to that.
+async function safely<T>(work: () => Promise<T | null> | undefined): Promise<T | null> {
+  try {
+    return (await work()) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // Hand the bytes to main, which stores them and returns the record the todo
 // keeps. A single unreadable image never drops the rest of the paste.
 async function storeImages(files: File[]): Promise<TodoImage[]> {
   const stored: TodoImage[] = [];
   for (const file of files) {
-    try {
-      const saved = await window.electronAPI.todoSaveImage(new Uint8Array(await file.arrayBuffer()));
-      if (saved) stored.push(saved);
-    } catch {
-      // Ignore this one and keep going.
-    }
+    const saved = await safely(async () =>
+      window.electronAPI?.todoSaveImage?.(new Uint8Array(await file.arrayBuffer())));
+    if (saved) stored.push(saved);
   }
   return stored;
 }
@@ -87,14 +98,14 @@ const pasteHandler = (attach: (images: TodoImage[]) => void) => (e: React.Clipbo
   e.preventDefault();
   const stored = files.length > 0
     ? storeImages(files)
-    : window.electronAPI.todoSaveClipboardImage().then((i) => (i ? [i] : [])).catch(() => []);
+    : safely(() => window.electronAPI?.todoSaveClipboardImage?.()).then((i) => (i ? [i] : []));
   void stored.then((images) => { if (images.length > 0) attach(images); });
 };
 
 // Best-effort removal of the files behind images that are no longer referenced.
 function deleteImageFiles(images: TodoImage[] | undefined): void {
   const paths = (images ?? []).map((i) => i.path);
-  if (paths.length > 0) void window.electronAPI.todoDeleteImages(paths).catch(() => {});
+  if (paths.length > 0) void safely(() => window.electronAPI?.todoDeleteImages?.(paths));
 }
 
 // One stored image. The bitmap lives on disk, so the preview is fetched from main
@@ -110,10 +121,8 @@ const ImageThumb: React.FC<{
 
   useEffect(() => {
     let alive = true;
-    window.electronAPI
-      .todoImageData(image.path, THUMB * 3)
-      .then((data) => { if (alive) setSrc(data); })
-      .catch(() => {});
+    void safely(() => window.electronAPI?.todoImageData?.(image.path, THUMB * 3))
+      .then((data) => { if (alive) setSrc(data); });
     return () => { alive = false; };
   }, [image.path]);
 
@@ -166,10 +175,8 @@ const ImageLightbox: React.FC<{ image: TodoImage; onClose: () => void }> = ({ im
 
   useEffect(() => {
     let alive = true;
-    window.electronAPI
-      .todoImageData(image.path, 1600)
-      .then((data) => { if (alive) setSrc(data); })
-      .catch(() => {});
+    void safely(() => window.electronAPI?.todoImageData?.(image.path, 1600))
+      .then((data) => { if (alive) setSrc(data); });
     return () => { alive = false; };
   }, [image.path]);
 

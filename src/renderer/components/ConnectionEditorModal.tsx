@@ -18,6 +18,10 @@ interface ConnectionEditorModalProps {
   /** Called with the freshly saved/updated connection after a successful submit. */
   onDone: (saved: SavedConnection) => void;
   onCancel: () => void;
+  /** Existing group names, offered as suggestions for the Group field. */
+  groups?: string[];
+  /** Group a NEW connection starts in (e.g. "+" on a group header). */
+  defaultGroup?: string;
 }
 
 export const ConnectionEditorModal: React.FC<ConnectionEditorModalProps> = ({
@@ -26,9 +30,12 @@ export const ConnectionEditorModal: React.FC<ConnectionEditorModalProps> = ({
   onUpdate,
   onDone,
   onCancel,
+  groups = [],
+  defaultGroup,
 }) => {
   const editing = !!connection;
   const [label, setLabel] = useState(connection?.label ?? '');
+  const [group, setGroup] = useState(connection ? (connection.group ?? '') : (defaultGroup ?? ''));
   const [host, setHost] = useState(connection?.host ?? '');
   const [port, setPort] = useState(String(connection?.port ?? 22));
   const [username, setUsername] = useState(connection?.username ?? '');
@@ -78,6 +85,7 @@ export const ConnectionEditorModal: React.FC<ConnectionEditorModalProps> = ({
       offerSavedPassword,
       // Empty leaves the stored sudo password untouched on edit.
       sudoPassword: sudoPassword || undefined,
+      group: group.trim() || undefined,
     };
 
     setSaving(true);
@@ -137,9 +145,17 @@ export const ConnectionEditorModal: React.FC<ConnectionEditorModalProps> = ({
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: '20px 24px' }}>
-          <Field label="Label">
-            <Input value={label} onChange={setLabel} placeholder="My Server" autoFocus />
-          </Field>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <Field label="Label">
+              <Input value={label} onChange={setLabel} placeholder="My Server" autoFocus />
+            </Field>
+            <Field label="Group (optional)">
+              <Input value={group} onChange={setGroup} placeholder="e.g. Production" list="ssh-connection-groups" />
+              <datalist id="ssh-connection-groups">
+                {groups.map((g) => <option key={g} value={g} />)}
+              </datalist>
+            </Field>
+          </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 96px', gap: 12 }}>
             <Field label="Host">
@@ -241,8 +257,10 @@ const Input: React.FC<{
   placeholder?: string;
   readOnly?: boolean;
   autoFocus?: boolean;
+  /** id of a <datalist> with suggestions. */
+  list?: string;
   style?: React.CSSProperties;
-}> = ({ value, onChange, type = 'text', placeholder, readOnly, autoFocus, style }) => {
+}> = ({ value, onChange, type = 'text', placeholder, readOnly, autoFocus, list, style }) => {
   const [focused, setFocused] = useState(false);
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => { if (autoFocus) ref.current?.focus(); }, [autoFocus]);
@@ -253,6 +271,7 @@ const Input: React.FC<{
       value={value}
       readOnly={readOnly}
       placeholder={placeholder}
+      list={list}
       onChange={(e) => onChange(e.target.value)}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}

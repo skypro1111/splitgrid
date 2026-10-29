@@ -14,6 +14,7 @@ import type {
   RecentCommand,
   SavedPrompt,
 } from '../../shared/types';
+import { pruneLayoutTree } from '../../shared/layout-tree';
 
 // Cap on the rolling "recently run" command feed (environment-scoped).
 const RECENT_COMMAND_LIMIT = 40;
@@ -297,7 +298,15 @@ export function useWorkspace() {
   // Re-add a previously-closed workspace snapshot (from "Open Recent"). Never
   // restore a frozen flag — its processes are gone and will respawn running.
   const addWorkspace = useCallback((ws: Workspace) => {
-    const restored: Workspace = { ...ws, frozen: false, updatedAt: Date.now() };
+    // The snapshot can carry leaves whose containers are gone; keep them and the
+    // reopened workspace renders an empty, un-splittable grid (see hydrateState).
+    const containerIds = new Set((ws.containers ?? []).map((c) => c.id));
+    const restored: Workspace = {
+      ...ws,
+      frozen: false,
+      layoutTree: pruneLayoutTree(ws.layoutTree, (id) => containerIds.has(id)),
+      updatedAt: Date.now(),
+    };
     setWorkspaces((prev) =>
       prev.some((w) => w.id === restored.id) ? prev : [...prev, restored]
     );
@@ -626,7 +635,7 @@ export function useWorkspace() {
                     title: tab.title,
                     schema: tab.schema,
                     objectName: tab.objectName,
-                    database: (tab as any).database ?? current.database ?? 'postgres',
+                    database: (tab as any).database ?? current.database ?? null,
                     savedConnectionId: (tab as any).savedConnectionId ?? current.savedConnectionId ?? null,
                   };
                 }
@@ -635,8 +644,8 @@ export function useWorkspace() {
                   type: 'query',
                   title: tab.title,
                   query: tab.query ?? 'SELECT now();',
-                  database: (tab as any).database ?? current.database ?? 'postgres',
-                  schema: (tab as any).schema ?? (current as any).schema ?? 'public',
+                  database: (tab as any).database ?? current.database ?? null,
+                  schema: (tab as any).schema ?? (current as any).schema ?? null,
                   savedConnectionId: (tab as any).savedConnectionId ?? current.savedConnectionId ?? null,
                 };
               })
@@ -646,8 +655,8 @@ export function useWorkspace() {
                   type: 'query',
                   title: 'Query 1',
                   query: typeof current.query === 'string' ? current.query : 'SELECT now();',
-                  database: current.database ?? 'postgres',
-                  schema: (current as any).schema ?? 'public',
+                  database: current.database ?? null,
+                  schema: (current as any).schema ?? null,
                   savedConnectionId: current.savedConnectionId ?? null,
                 },
               ];
@@ -696,8 +705,10 @@ export function useWorkspace() {
               host: current.host ?? '127.0.0.1',
               port: typeof current.port === 'number' ? current.port : 5432,
               user: current.user ?? 'postgres',
-              database: current.database ?? 'postgres',
-              schema: (current as any).schema ?? 'public',
+              // Hydrate the pane's context as-is: inventing 'postgres'/'public'
+              // here re-applied a wrong database to every connection opened later.
+              database: current.database ?? '',
+              schema: (current as any).schema ?? null,
               ssl: !!current.ssl,
               tabs: normalizedTabs,
               activeTabId,
@@ -706,14 +717,25 @@ export function useWorkspace() {
           },
         };
       });
+      // A leaf left pointing at a container that is no longer in `containers`
+      // renders as nothing but still owns its slice of the grid — one such leaf
+      // as the whole tree makes the workspace look empty while hiding the
+      // "Add Container" empty state, leaving no way to open a pane. Prune those
+      // on load so a workspace saved in that state comes back usable.
+      const containerIds = new Set(containers.map((c) => c.id));
+      const layoutTree = pruneLayoutTree(ws.layoutTree, (id) => containerIds.has(id));
+      const focusedContainerId =
+        typeof ws.focusedContainerId === 'string' && containerIds.has(ws.focusedContainerId)
+          ? ws.focusedContainerId
+          : null;
       return {
         ...ws,
         containers,
+        layoutTree,
         workingDirectory: ws.workingDirectory ?? null,
         sync,
         containerZooms: ws.containerZooms ?? {},
-        focusedContainerId:
-          typeof ws.focusedContainerId === 'string' ? ws.focusedContainerId : null,
+        focusedContainerId,
         createdAt: ws.createdAt ?? Date.now(),
         updatedAt: ws.updatedAt ?? Date.now(),
       };

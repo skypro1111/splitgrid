@@ -123,7 +123,8 @@ export const QuickChatPalette: React.FC<QuickChatPaletteProps> = ({ open, onClos
   }, [input, chat, model]);
 
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // IME: the Enter that commits a composition candidate isn't a submit.
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       submit();
       return;

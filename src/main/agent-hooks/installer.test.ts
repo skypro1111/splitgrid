@@ -23,7 +23,7 @@ describe('applyHooksToConfig', () => {
       expect(mine.hooks[0]).toMatchObject({
         type: 'command',
         command: `"${HELPER}" ${ev.splitgridEvent}`,
-        timeout: CLAUDE.timeoutMs,
+        timeout: CLAUDE.timeoutSec,
       });
     }
   });

@@ -101,6 +101,24 @@ describe('per-workspace folder settings (.splitgrid)', () => {
     expect(ws.workingDirectory).toBe(workDir);
   });
 
+  it('lets only one workspace own a folder shared by two (no cross-clobber)', () => {
+    const store = new WorkspaceStore();
+    const owner = makeWorkspace({ id: 'ws-owner', workingDirectory: workDir, notes: 'owner-notes', updatedAt: 200 });
+    const twin = makeWorkspace({ id: 'ws-twin', workingDirectory: workDir, notes: 'twin-notes', updatedAt: 100 });
+    // Two workspaces on the same folder: the newer one owns the folder file...
+    store.save(makeState([twin, owner]));
+    expect(JSON.parse(readFileSync(folderFile(workDir), 'utf-8')).workspace.notes).toBe('owner-notes');
+
+    // ...and keeps owning it on the next save, whatever the array order.
+    store.save(makeState([owner, { ...twin, notes: 'twin-notes-2', updatedAt: 999 }]));
+    expect(JSON.parse(readFileSync(folderFile(workDir), 'utf-8')).workspace.notes).toBe('owner-notes');
+
+    // On load only the owner takes the folder content; the twin keeps its own.
+    const loaded = store.load()!;
+    expect(loaded.workspaces.find((w) => w.id === 'ws-owner')!.notes).toBe('owner-notes');
+    expect(loaded.workspaces.find((w) => w.id === 'ws-twin')!.notes).toBe('twin-notes-2');
+  });
+
   it('falls back to the userData copy when no folder file is present', () => {
     const store = new WorkspaceStore();
     store.save(makeState([makeWorkspace({ workingDirectory: workDir, notes: 'env-only' })]));

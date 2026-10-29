@@ -1,12 +1,16 @@
 import { app, safeStorage } from 'electron';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
-import type { SavedConnection, SSHConnectionConfig } from '../shared/types';
+import type { ConnectionGroupsState, SavedConnection, SSHConnectionConfig } from '../shared/types';
 import { fallbackKey, legacyFallbackKey } from './fallback-key';
+import { writeFileAtomicSync } from './atomic-write';
 
 const STORE_FILE = 'saved-connections.json';
+// Group order (incl. empty groups) and fold state. Kept out of STORE_FILE so the
+// connections file stays a plain array older builds can still read.
+const GROUPS_FILE = 'connection-groups.json';
 const ALGO = 'aes-256-gcm';
 
 let warnedWeakFallback = false;
@@ -74,14 +78,44 @@ function decrypt(stored: string): string {
   return '';
 }
 
+/** Trimmed group name, or undefined for "no group". */
+export function normalizeGroupName(name: unknown): string | undefined {
+  if (typeof name !== 'string') return undefined;
+  const trimmed = name.trim();
+  return trimmed || undefined;
+}
+
 export class ConnectionStore {
   private filePath: string;
+  private groupsFilePath: string;
   private connections: SavedConnection[] = [];
+  private groups: ConnectionGroupsState = { groups: [], collapsed: [] };
 
   constructor() {
     const userDataPath = app.getPath('userData');
     this.filePath = path.join(userDataPath, STORE_FILE);
+    this.groupsFilePath = path.join(userDataPath, GROUPS_FILE);
     this.load();
+    this.loadGroups();
+  }
+
+  private loadGroups(): void {
+    try {
+      if (!existsSync(this.groupsFilePath)) return;
+      const raw = JSON.parse(readFileSync(this.groupsFilePath, 'utf-8'));
+      const names = (v: unknown): string[] => Array.isArray(v)
+        ? Array.from(new Set(v.map(normalizeGroupName).filter((n): n is string => !!n)))
+        : [];
+      this.groups = { groups: names(raw?.groups), collapsed: names(raw?.collapsed) };
+    } catch {
+      this.groups = { groups: [], collapsed: [] };
+    }
+  }
+
+  private saveGroups(): void {
+    const dir = path.dirname(this.groupsFilePath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileAtomicSync(this.groupsFilePath, JSON.stringify(this.groups, null, 2));
   }
 
   private load(): void {
@@ -103,7 +137,7 @@ export class ConnectionStore {
       mkdirSync(dir, { recursive: true });
     }
     // 0600: the file holds encrypted credentials — never world-readable.
-    writeFileSync(this.filePath, JSON.stringify(this.connections, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    writeFileAtomicSync(this.filePath, JSON.stringify(this.connections, null, 2), { mode: 0o600 });
   }
 
   getAll(): SavedConnection[] {
@@ -120,6 +154,7 @@ export class ConnectionStore {
       authMethod: config.authMethod,
       privateKeyPath: config.privateKeyPath,
       offerSavedPassword: config.offerSavedPassword,
+      group: normalizeGroupName(config.group),
     };
 
     if (config.password) {
@@ -134,6 +169,7 @@ export class ConnectionStore {
 
     this.connections.push(saved);
     this.save();
+    this.registerGroup(saved.group);
     return saved;
   }
 
@@ -151,6 +187,7 @@ export class ConnectionStore {
       authMethod: config.authMethod,
       privateKeyPath: config.privateKeyPath,
       offerSavedPassword: config.offerSavedPassword,
+      group: normalizeGroupName(config.group),
     };
 
     if (config.password) {
@@ -174,12 +211,112 @@ export class ConnectionStore {
 
     this.connections[idx] = updated;
     this.save();
+    this.registerGroup(updated.group);
     return updated;
+  }
+
+  /**
+   * Copy a connection (secrets included — the encrypted blobs are reused as-is)
+   * under a new id, right after the original, labelled "<label> (copy)".
+   */
+  duplicate(id: string): SavedConnection | null {
+    const idx = this.connections.findIndex((c) => c.id === id);
+    if (idx === -1) return null;
+    const copy: SavedConnection = { ...this.connections[idx], id: uuidv4(), label: `${this.connections[idx].label} (copy)` };
+    this.connections.splice(idx + 1, 0, copy);
+    this.save();
+    return copy;
   }
 
   delete(id: string): void {
     this.connections = this.connections.filter((c) => c.id !== id);
     this.save();
+  }
+
+  // --- Groups ---------------------------------------------------------------
+
+  /** Stored group order, plus any group a connection names that the list lacks. */
+  getGroups(): ConnectionGroupsState {
+    const groups = [...this.groups.groups];
+    for (const c of this.connections) {
+      if (c.group && !groups.includes(c.group)) groups.push(c.group);
+    }
+    return { groups, collapsed: this.groups.collapsed.filter((g) => groups.includes(g)) };
+  }
+
+  /** Append a group to the stored order if it is new. */
+  private registerGroup(name: string | undefined): void {
+    if (!name || this.groups.groups.includes(name)) return;
+    this.groups.groups.push(name);
+    this.saveGroups();
+  }
+
+  createGroup(name: string): void {
+    const n = normalizeGroupName(name);
+    if (!n) throw new Error('Group name is empty');
+    this.registerGroup(n);
+  }
+
+  /** Rename a group; renaming onto an existing group merges the two. */
+  renameGroup(from: string, to: string): void {
+    const src = normalizeGroupName(from);
+    const dst = normalizeGroupName(to);
+    if (!src || !dst) throw new Error('Group name is empty');
+    if (src === dst) return;
+    // Read the order BEFORE moving members, or dst would already look present.
+    const order = this.getGroups().groups;
+    const merged = order.includes(dst);
+    let touched = false;
+    for (const c of this.connections) {
+      if (c.group === src) { c.group = dst; touched = true; }
+    }
+    if (touched) this.save();
+    this.groups.groups = merged
+      ? order.filter((g) => g !== src)
+      : order.map((g) => (g === src ? dst : g));
+    const wasCollapsed = this.groups.collapsed.includes(src);
+    this.groups.collapsed = this.groups.collapsed.filter((g) => g !== src);
+    if (wasCollapsed && !merged) this.groups.collapsed.push(dst);
+    this.saveGroups();
+  }
+
+  /** Remove a group; its connections become ungrouped (they are not deleted). */
+  deleteGroup(name: string): void {
+    const n = normalizeGroupName(name);
+    if (!n) return;
+    let touched = false;
+    for (const c of this.connections) {
+      if (c.group === n) { delete c.group; touched = true; }
+    }
+    if (touched) this.save();
+    this.groups.groups = this.groups.groups.filter((g) => g !== n);
+    this.groups.collapsed = this.groups.collapsed.filter((g) => g !== n);
+    this.saveGroups();
+  }
+
+  setGroupCollapsed(name: string, collapsed: boolean): void {
+    const n = normalizeGroupName(name);
+    if (!n) return;
+    const has = this.groups.collapsed.includes(n);
+    if (has === collapsed) return;
+    this.groups.collapsed = collapsed
+      ? [...this.groups.collapsed, n]
+      : this.groups.collapsed.filter((g) => g !== n);
+    this.saveGroups();
+  }
+
+  /** File connections under `group` (null/empty = ungrouped). */
+  moveToGroup(ids: string[], group: string | null): void {
+    const g = normalizeGroupName(group);
+    const wanted = new Set(ids);
+    let touched = false;
+    for (const c of this.connections) {
+      if (!wanted.has(c.id) || c.group === g) continue;
+      if (g) c.group = g; else delete c.group;
+      touched = true;
+    }
+    if (touched) this.save();
+    this.registerGroup(g);
   }
 
   toConnectionConfig(saved: SavedConnection): Omit<SSHConnectionConfig, 'id'> {
@@ -191,6 +328,7 @@ export class ConnectionStore {
       authMethod: saved.authMethod,
       privateKeyPath: saved.privateKeyPath,
       offerSavedPassword: saved.offerSavedPassword,
+      group: saved.group,
     };
 
     if (saved.encryptedPassword) {

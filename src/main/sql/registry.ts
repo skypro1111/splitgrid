@@ -119,7 +119,19 @@ class SqlRegistry {
     await driver.beginTx(id);
     try {
       for (const stmt of statements) {
-        await driver.execute(id, stmt.sql, stmt.params);
+        const result = await driver.execute(id, stmt.sql, stmt.params);
+        // Each change targets exactly one row by its key. Zero means the row
+        // changed or vanished since it was loaded — reporting success would drop
+        // the edit silently. (MSSQL's count also includes trigger statements, so
+        // only "none" is meaningful there.)
+        const affected = result.affectedRows ?? result.rowCount;
+        if (affected === 0 || (affected > 1 && dialect !== 'mssql')) {
+          throw new Error(
+            affected === 0
+              ? 'Edit matched no row — it may have changed or been deleted since it was loaded. Refresh and try again.'
+              : `Edit matched ${affected} rows instead of one; nothing was saved.`
+          );
+        }
       }
       await driver.commitTx(id);
       return { applied: statements.length };
@@ -139,6 +151,7 @@ class SqlRegistry {
     const deps: ExportDeps = {
       execute: (id, sql, params) => this.require(id).execute(id, sql, params),
       getDialect: (id) => this.require(id).getDialect(id),
+      getPrimaryKey: (id, schema, table) => this.require(id).getPrimaryKey(id, schema, table),
     };
     return exportData(deps, connectionId, options);
   }

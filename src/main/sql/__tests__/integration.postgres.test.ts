@@ -421,6 +421,14 @@ describe.skipIf(!PG_ENABLED)('PostgreSQL live integration (SQL_IT=1)', () => {
     const after = await sqlRegistry.execute(connId, 'SELECT name FROM t WHERE id = 1');
     expect(after.rows[0].name).toBe('A');
 
+    // an edit whose row is gone fails (and rolls back) instead of reporting success
+    await expect(sqlRegistry.applyEdits(connId, [
+      { kind: 'update', schema: 'main', table: 't', pk: { id: 1 }, column: 'name', value: 'Z' },
+      { kind: 'update', schema: 'main', table: 't', pk: { id: 999 }, column: 'name', value: 'Z' },
+    ])).rejects.toThrow(/matched no row/);
+    const rolledBack = await sqlRegistry.execute(connId, 'SELECT name FROM t WHERE id = 1');
+    expect(rolledBack.rows[0].name).toBe('A');
+
     // export current view to CSV
     const csvPath = join(dbDir, 'out.csv');
     tmpFiles.push(csvPath);

@@ -66,45 +66,25 @@ export function useTabs(initialState?: IDEContainerState) {
     setActiveTabId(filePath);
   }, []);
 
-  const closeTab = useCallback((tabId: string) => {
-    dirtySet.current.delete(tabId);
+  // Close any set of tabs. When the active one goes, activate the tab that now
+  // sits where it was (or the last one). Callers save/prompt beforehand — this
+  // only drops the tabs.
+  const closeTabs = useCallback((tabIds: string[]) => {
+    if (tabIds.length === 0) return;
+    const closing = new Set(tabIds);
+    for (const id of tabIds) dirtySet.current.delete(id);
     setTabs(prev => {
-      const idx = prev.findIndex(t => t.id === tabId);
-      const next = prev.filter(t => t.id !== tabId);
-      if (tabId === activeTabId) {
-        // Activate neighbour
-        if (next.length === 0) {
-          setActiveTabId(null);
-        } else {
-          const newIdx = Math.min(idx, next.length - 1);
-          setActiveTabId(next[newIdx].id);
-        }
-      }
+      const next = prev.filter(t => !closing.has(t.id));
+      setActiveTabId(active => {
+        if (!active || !closing.has(active)) return active;
+        if (next.length === 0) return null;
+        const idx = prev.findIndex(t => t.id === active);
+        const survivorsBefore = prev.slice(0, idx).filter(t => !closing.has(t.id)).length;
+        return next[Math.min(survivorsBefore, next.length - 1)].id;
+      });
       return next;
     });
-  }, [activeTabId]);
-
-  const closeOtherTabs = useCallback((tabId: string) => {
-    setTabs(prev => prev.filter(t => t.id === tabId));
-    setActiveTabId(tabId);
   }, []);
-
-  const closeAllTabs = useCallback(() => {
-    setTabs([]);
-    setActiveTabId(null);
-    dirtySet.current.clear();
-  }, []);
-
-  const closeTabsToRight = useCallback((tabId: string) => {
-    setTabs(prev => {
-      const idx = prev.findIndex(t => t.id === tabId);
-      const next = prev.slice(0, idx + 1);
-      if (activeTabId && !next.find(t => t.id === activeTabId)) {
-        setActiveTabId(tabId);
-      }
-      return next;
-    });
-  }, [activeTabId]);
 
   const pinTab = useCallback((tabId: string) => {
     setTabs(prev =>
@@ -115,8 +95,10 @@ export function useTabs(initialState?: IDEContainerState) {
   const setDirty = useCallback((tabId: string, dirty: boolean) => {
     if (dirty) dirtySet.current.add(tabId);
     else dirtySet.current.delete(tabId);
+    // Editing pins a preview tab (as in VS Code), so the next single-click
+    // can't replace a tab that holds unsaved edits.
     setTabs(prev =>
-      prev.map(t => (t.id === tabId ? { ...t, isDirty: dirty } : t))
+      prev.map(t => (t.id === tabId ? { ...t, isDirty: dirty, isPreview: dirty ? false : t.isPreview } : t))
     );
   }, []);
 
@@ -136,10 +118,7 @@ export function useTabs(initialState?: IDEContainerState) {
     activeTabId,
     activeTab,
     openFile,
-    closeTab,
-    closeOtherTabs,
-    closeAllTabs,
-    closeTabsToRight,
+    closeTabs,
     pinTab,
     setActiveTabId,
     setDirty,

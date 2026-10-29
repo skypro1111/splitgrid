@@ -3,12 +3,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { decodeWslOutput } from './wsl-encoding';
 import { parseWslScan, aggregateWslTerminal, type WslRow } from './wsl-metrics';
-import { existsSync, appendFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { crashLog } from './crash-log';
 import { execFile, spawn } from 'node:child_process';
 import { RECEIVER_PORT } from './agent-activity-receiver';
 import { BROWSER_TOKEN } from './agent-browser-bridge';
 import { bridgeDirPath } from './agent-file-bridge';
-import { hookHelperPath, browserHelperPath, terminalHelperPath, sqlHelperPath, sftpHelperPath } from './agent-hooks/paths';
+import { hookHelperPath, browserHelperPath, terminalHelperPath, sqlHelperPath, sftpHelperPath, agentPaneHelperPath } from './agent-hooks/paths';
 import {
   detectWslDistros, isWslShell, wslDistroFromShell, wslShellFor, wslExePath,
 } from './wsl';
@@ -102,13 +103,12 @@ export function isAgentSftpWriteEnabled(): boolean {
 }
 
 // TEMP diagnostics for the WSL terminal crash: trace the spawn intent + outcome
-// to ~/splitgrid-terminal-debug.log. If "spawn intent" is logged but neither "spawn
-// OK" nor a caught error follows before the app dies, the crash is inside
-// node-pty's native spawn (ConPTY) rather than catchable JS.
+// to the crash log (~/splitgrid-terminal-debug.log, size-rotated there). If "spawn
+// intent" is logged but neither "spawn OK" nor a caught error follows before the
+// app dies, the crash is inside node-pty's native spawn (ConPTY) rather than
+// catchable JS. Spawn-time only — nothing on the per-poll metrics path.
 function termDbg(msg: string): void {
-  try {
-    appendFileSync(path.join(os.homedir(), 'splitgrid-terminal-debug.log'), `[${new Date().toISOString()}] ${msg}\n`);
-  } catch { /* best-effort */ }
+  crashLog(msg, 'shell');
 }
 
 // ─── Shell discovery (Windows) ───────────────────────────────────────────────
@@ -268,7 +268,7 @@ function tokenizeCommand(cmd: string): string[] {
 }
 
 // Turn a full command line into a short, friendly process name for the UI:
-// agent CLIs by name (claude/codex/cursor), interpreters by their script, else
+// agent CLIs by name (claude/codex/cursor/opencode), interpreters by their script, else
 // the executable basename. e.g. "node /x/claude/cli.js --foo" -> "claude".
 function deriveProcessLabel(command: string): string {
   const trimmed = command.trim();
@@ -615,15 +615,11 @@ async function collectWslProcessMetrics(
     try {
       const buf = await execWslScript(distro, WSL_PS_SCRIPT, 5000);
       output = decodeWslOutput(buf);
-      termDbg(`wsl scan distro=${distro} want=${[...wantIds].join(',')} bytes=${buf.length} sample=${JSON.stringify(output.slice(0, 240))}`);
-    } catch (err) {
-      termDbg(`wsl scan distro=${distro} FAILED: ${(err as Error).message}`);
+    } catch {
       return; // distro not running / wsl.exe failed — leave these terminals without metrics
     }
 
     const { clk, rowsByTerm, portsByPid } = parseWslScan(output);
-
-    termDbg(`wsl scan distro=${distro} parsed terms=[${[...rowsByTerm.keys()].join(',')}] rowsPerTerm=${JSON.stringify([...rowsByTerm].map(([t, r]) => [t.slice(0, 8), r.length]))}`);
 
     for (const id of wantIds) {
       const rows = rowsByTerm.get(id);
@@ -642,7 +638,6 @@ async function collectWslProcessMetrics(
       liveTerminals.add(id);
 
       const finalCommand = agg.foregroundCommand ? deriveProcessLabel(agg.foregroundCommand) : undefined;
-      termDbg(`wsl metric id=${id.slice(0, 8)} procs=${agg.processCount} cmd=${finalCommand} rss=${agg.rssBytes} cpu=${cpuPercent.toFixed(1)} ports=${agg.listenPorts.join(',')}`);
       result.set(id, {
         cpuPercent,
         rssBytes: agg.rssBytes,
@@ -966,11 +961,28 @@ async function collectProcessTree(rootPid: number): Promise<TerminalProcessInfo[
   }
 }
 
+const METRICS_CACHE_MS = 1000;
+
+interface SessionMetrics {
+  processMetrics: { supported: boolean; metrics: Map<number, ProcessTreeMetric> };
+  wslMetrics: Map<string, ProcessTreeMetric>;
+}
+
+function isWslSession(s: LocalShellSession): boolean {
+  return process.platform === 'win32' && isWslShell(s.info.shell);
+}
+
 export class LocalShellManager {
   private sessions = new Map<string, LocalShellSession>();
   private callbacks: ShellCallbacks | null = null;
   private isShuttingDown = false;
   private frozen = new Set<string>();
+  // Every window polls getAllDiagnostics on its own ~2s timer (and the poll
+  // doesn't wait for the previous one), while each scan spawns ps+lsof — or
+  // PowerShell+netstat+wsl.exe on Windows. Share one in-flight scan and reuse
+  // its result briefly so N windows cost one scan, and slow scans can't pile up.
+  private metricsInFlight: Promise<SessionMetrics> | null = null;
+  private metricsCache: { at: number; value: SessionMetrics } | null = null;
 
   setCallbacks(callbacks: ShellCallbacks): void {
     this.callbacks = callbacks;
@@ -1057,7 +1069,12 @@ export class LocalShellManager {
       };
       if (!isWindows) {
         baseEnv.LANG = process.env.LANG || 'en_US.UTF-8';
-        baseEnv.LC_CTYPE = 'UTF-8';
+        // Bare `UTF-8` is a valid LC_CTYPE only on macOS; glibc rejects it
+        // ("setlocale: LC_CTYPE: cannot change locale") and drops to the C
+        // locale. Never override a ctype the user already has.
+        if (process.platform === 'darwin' && !process.env.LC_ALL && !process.env.LC_CTYPE) {
+          baseEnv.LC_CTYPE = 'UTF-8';
+        }
       }
 
       // Agent integrations (hooks + browser control) are opt-in: inject the
@@ -1088,6 +1105,12 @@ export class LocalShellManager {
           baseEnv.SPLITGRID_TERMINAL_ENDPOINT = `http://127.0.0.1:${RECEIVER_PORT}/terminal`;
           baseEnv.SPLITGRID_TERMINAL_CLI = terminalHelperPath(isWsl);
           baseEnv.SPLITGRID_TERMINAL_TOKEN = BROWSER_TOKEN;
+          // Claude Code PANES ride the same sub-opt-in: prompting a pane (or
+          // approving its tool call) is the same privilege as typing into a
+          // sibling shell, and the pane is just another agent surface.
+          baseEnv.SPLITGRID_AGENT_ENDPOINT = `http://127.0.0.1:${RECEIVER_PORT}/agent`;
+          baseEnv.SPLITGRID_AGENT_CLI = agentPaneHelperPath(isWsl);
+          baseEnv.SPLITGRID_AGENT_TOKEN = BROWSER_TOKEN;
         }
 
         // Agent SQL control: this terminal's agent can run queries, inspect
@@ -1139,6 +1162,9 @@ export class LocalShellManager {
               'SPLITGRID_TERMINAL_ENDPOINT/u',
               'SPLITGRID_TERMINAL_CLI/up',
               'SPLITGRID_TERMINAL_TOKEN/u',
+              'SPLITGRID_AGENT_ENDPOINT/u',
+              'SPLITGRID_AGENT_CLI/up',
+              'SPLITGRID_AGENT_TOKEN/u',
             ] : []),
             // Only share the SQL-control vars when that sub-opt-in is on — they
             // aren't set on baseEnv otherwise. SPLITGRID_SQL_WRITE is a bare hint
@@ -1330,29 +1356,46 @@ export class LocalShellManager {
     return Array.from(this.sessions.values()).map((s) => s.info);
   }
 
-  async getAllDiagnostics(): Promise<{
-    processMetricsSupported: boolean;
-    sessions: TerminalResourceInfo[];
-  }> {
+  private collectSessionMetrics(): Promise<SessionMetrics> {
+    const cached = this.metricsCache;
+    if (cached && Date.now() - cached.at < METRICS_CACHE_MS) return Promise.resolve(cached.value);
+    if (this.metricsInFlight) return this.metricsInFlight;
     const all = Array.from(this.sessions.values());
-    const isWindows = process.platform === 'win32';
-    const isWsl = (s: LocalShellSession) => isWindows && isWslShell(s.info.shell);
     // Native terminals query by pty pid; WSL terminals can't (the Windows wsl.exe
     // pid is opaque to the distro), so they go through an in-distro scan keyed by
     // terminal id. Both run concurrently.
-    const [processMetrics, wslMetrics] = await Promise.all([
-      collectProcessTreeMetrics(all.filter((s) => !isWsl(s)).map((s) => s.pty.pid)),
+    const run = Promise.all([
+      collectProcessTreeMetrics(all.filter((s) => !isWslSession(s)).map((s) => s.pty.pid)),
       (() => {
-        const wsl = all.filter(isWsl);
+        const wsl = all.filter(isWslSession);
         return wsl.length
           ? collectWslProcessMetrics(wsl.map((s) => ({ id: s.info.id, distro: wslDistroFromShell(s.info.shell ?? '') })))
           : Promise.resolve(new Map<string, ProcessTreeMetric>());
       })(),
-    ]);
+    ]).then(([processMetrics, wslMetrics]) => {
+      const value = { processMetrics, wslMetrics };
+      this.metricsCache = { at: Date.now(), value };
+      return value;
+    }).finally(() => {
+      this.metricsInFlight = null;
+    });
+    this.metricsInFlight = run;
+    return run;
+  }
+
+  async getAllDiagnostics(): Promise<{
+    processMetricsSupported: boolean;
+    sessions: TerminalResourceInfo[];
+  }> {
+    const { processMetrics, wslMetrics } = await this.collectSessionMetrics();
+    // Built from the live session map (not the scan's), so a session opened or
+    // closed since the shared scan started is listed correctly — a new one just
+    // has no metric until the next scan.
+    const all = Array.from(this.sessions.values());
     return {
       processMetricsSupported: processMetrics.supported,
       sessions: all.map((s) => {
-        const metric = isWsl(s) ? wslMetrics.get(s.info.id) : processMetrics.metrics.get(s.pty.pid);
+        const metric = isWslSession(s) ? wslMetrics.get(s.info.id) : processMetrics.metrics.get(s.pty.pid);
         return {
           id: s.info.id,
           type: 'local',

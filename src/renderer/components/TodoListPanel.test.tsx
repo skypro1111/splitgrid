@@ -158,6 +158,32 @@ describe('TodoListPanel images', () => {
     await waitFor(async () => expect(await screen.findAllByAltText('Task screenshot')).toHaveLength(1));
   });
 
+  // An older preload (stale install, or a dev renderer reload against a running
+  // main process) has none of the todo* methods. One unhandled TypeError out of
+  // an event handler replaces the whole app with the boot-error screen, so the
+  // panel has to degrade instead of throwing.
+  it('survives a preload with no image support instead of taking the UI down', async () => {
+    Object.assign(window, { electronAPI: {} });
+    const todos: WorkspaceTodo[] = [
+      { id: 't1', text: 'has an image', status: 'todo', createdAt: 0, images: [storedImage(1)] },
+    ];
+    const onRun = vi.fn();
+    render(<Harness initial={todos} onRun={onRun} />);
+
+    // Thumbnail can't load — the item still renders, with the placeholder.
+    expect(screen.getByText('has an image')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByAltText('Task screenshot')).toBeNull());
+
+    // None of these may throw.
+    fireEvent.paste(addInput(), imagePaste());
+    fireEvent.paste(addInput(), emptyPaste);
+    fireEvent.click(screen.getByTitle(/^Run in focused terminal/));
+    fireEvent.click(screen.getByTitle('Delete'));
+
+    expect(onRun).toHaveBeenCalledWith('has an image', [`${IMAGE_DIR}/img-1.png`]);
+    expect(screen.queryByText('has an image')).toBeNull();
+  });
+
   it('discards draft images when the panel closes before the task is added', async () => {
     const { unmount } = render(<Harness />);
     fireEvent.paste(addInput(), imagePaste());

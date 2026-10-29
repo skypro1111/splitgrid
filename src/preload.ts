@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { ElectronAPI, SftpTransferProgress } from './shared/types';
+import type { AgentEvent } from './shared/agent-types';
 
 const api: ElectronAPI = {
   // SSH session
@@ -33,21 +34,28 @@ const api: ElectronAPI = {
     ipcRenderer.on('terminal:on-error', handler);
     return () => ipcRenderer.removeListener('terminal:on-error', handler);
   },
-  onClaudeResponse: (callback) => {
-    const handler = (_e: Electron.IpcRendererEvent, sessionId: string) => callback(sessionId);
-    ipcRenderer.on('terminal:claude-response', handler);
-    return () => ipcRenderer.removeListener('terminal:claude-response', handler);
-  },
 
   // Saved connections
   getSavedConnections: () => ipcRenderer.invoke('connections:list'),
   saveConnection: (config) => ipcRenderer.invoke('connections:save', config),
   updateConnection: (id, config) => ipcRenderer.invoke('connections:update', id, config),
   deleteSavedConnection: (id) => ipcRenderer.invoke('connections:delete', id),
+  duplicateConnection: (id) => ipcRenderer.invoke('connections:duplicate', id),
   connectSaved: (id) => ipcRenderer.invoke('connections:connect', id),
   testSavedConnection: (id) => ipcRenderer.invoke('connections:test', id),
   applyMouseScrollToHost: (id) => ipcRenderer.invoke('connections:apply-mouse-scroll', id),
   forgetHostKey: (host, port) => ipcRenderer.invoke('connections:forget-host-key', host, port),
+  getConnectionGroups: () => ipcRenderer.invoke('connections:groups'),
+  createConnectionGroup: (name) => ipcRenderer.invoke('connections:group-create', name),
+  renameConnectionGroup: (from, to) => ipcRenderer.invoke('connections:group-rename', from, to),
+  deleteConnectionGroup: (name) => ipcRenderer.invoke('connections:group-delete', name),
+  setConnectionGroupCollapsed: (name, collapsed) => ipcRenderer.invoke('connections:group-collapse', name, collapsed),
+  moveConnectionsToGroup: (ids, group) => ipcRenderer.invoke('connections:move-to-group', ids, group),
+  onSavedConnectionsChanged: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('connections:changed', handler);
+    return () => ipcRenderer.removeListener('connections:changed', handler);
+  },
 
   // Session recovery
   getActiveSessions: () => ipcRenderer.invoke('terminal:get-active'),
@@ -114,6 +122,33 @@ const api: ElectronAPI = {
     return () => { ipcRenderer.removeListener('sftp:fm-progress', handler); };
   },
 
+  // Claude Code agent panes
+  agentStartSession: (options) => ipcRenderer.invoke('agent:start-session', options),
+  agentAttachSession: (sessionId) => ipcRenderer.invoke('agent:attach-session', sessionId),
+  agentDetachSession: (sessionId) => ipcRenderer.invoke('agent:detach-session', sessionId),
+  agentSend: (sessionId, text) => ipcRenderer.invoke('agent:send', sessionId, text),
+  agentInterrupt: (sessionId) => ipcRenderer.invoke('agent:interrupt', sessionId),
+  agentRespondApproval: (sessionId, requestId, decision) =>
+    ipcRenderer.invoke('agent:respond-approval', sessionId, requestId, decision),
+  agentRespondQuestion: (sessionId, requestId, answers) =>
+    ipcRenderer.invoke('agent:respond-question', sessionId, requestId, answers),
+  agentSetPermissionMode: (sessionId, mode) =>
+    ipcRenderer.invoke('agent:set-permission-mode', sessionId, mode),
+  agentSetModel: (sessionId, model) => ipcRenderer.invoke('agent:set-model', sessionId, model),
+  agentListThreads: (cwd) => ipcRenderer.invoke('agent:list-threads', cwd),
+  agentNote: (sessionId, text) => ipcRenderer.invoke('agent:note', sessionId, text),
+  agentContextUsage: (sessionId) => ipcRenderer.invoke('agent:context-usage', sessionId),
+  agentListModels: (sessionId) => ipcRenderer.invoke('agent:list-models', sessionId),
+  agentSearchFiles: (root, query, limit) =>
+    ipcRenderer.invoke('agent:search-files', root, query, limit),
+  agentStopSession: (sessionId) => ipcRenderer.invoke('agent:stop-session', sessionId),
+  agentResumeId: (sessionId) => ipcRenderer.invoke('agent:resume-id', sessionId),
+  onAgentEvent: (cb: (event: AgentEvent) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, event: AgentEvent) => cb(event);
+    ipcRenderer.on('agent:event', handler);
+    return () => { ipcRenderer.removeListener('agent:event', handler); };
+  },
+
   // File watching
   watchFile: (filePath: string) => ipcRenderer.invoke('fs:watch-file', filePath),
   unwatchFile: (filePath: string) => ipcRenderer.invoke('fs:unwatch-file', filePath),
@@ -149,7 +184,7 @@ const api: ElectronAPI = {
 
   // Dialogs
   selectPrivateKeyFile: () => ipcRenderer.invoke('dialog:select-private-key'),
-  selectDirectory: () => ipcRenderer.invoke('dialog:select-directory'),
+  selectDirectory: (options) => ipcRenderer.invoke('dialog:select-directory', options),
   clipboardHasImage: () => ipcRenderer.invoke('clipboard:has-image'),
   clipboardSaveImageTemp: (target?: 'wsl' | null) =>
     ipcRenderer.invoke('clipboard:save-image-temp', target ?? null),
@@ -157,6 +192,12 @@ const api: ElectronAPI = {
     ipcRenderer.invoke('clipboard:read-file-paths', target ?? null),
   clipboardWriteText: (text: string) => ipcRenderer.invoke('clipboard:write-text', text),
   clipboardReadText: () => ipcRenderer.invoke('clipboard:read-text'),
+
+  // Renderer crashes/rejections, appended to the same log as the main-process
+  // trace. Fire-and-forget so reporting an error can never raise another one.
+  logRendererError: (message: string) => {
+    try { ipcRenderer.send('log:renderer-error', message); } catch { /* best-effort */ }
+  },
 
   // Images pasted into a todo item (stored in userData, not the temp dir).
   todoSaveImage: (bytes: Uint8Array) => ipcRenderer.invoke('todo:save-image', bytes),
@@ -250,6 +291,11 @@ const api: ElectronAPI = {
   sqlSaveConnection: (connection) => ipcRenderer.invoke('sql-connections:save', connection),
   sqlUpdateConnection: (savedId, patch) => ipcRenderer.invoke('sql-connections:update', savedId, patch),
   sqlDeleteConnection: (savedId) => ipcRenderer.invoke('sql-connections:delete', savedId),
+  onSqlConnectionsChanged: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('sql-connections:changed', handler);
+    return () => ipcRenderer.removeListener('sql-connections:changed', handler);
+  },
 
   loadWorkspaceState: () => ipcRenderer.invoke('workspace-state:load'),
   saveWorkspaceState: (state) => ipcRenderer.invoke('workspace-state:save', state),
@@ -257,7 +303,12 @@ const api: ElectronAPI = {
   addRecentWorkspace: (workspace) => ipcRenderer.invoke('workspace-recent:add', workspace),
 
   getAppSettings: () => ipcRenderer.invoke('app-settings:get'),
-  saveAppSettings: (settings) => ipcRenderer.invoke('app-settings:save', settings),
+  saveAppSettings: (patch) => ipcRenderer.invoke('app-settings:save', patch),
+  onAppSettingsChanged: (callback) => {
+    const handler = (_e: Electron.IpcRendererEvent, settings: import('./shared/types').AppSettings) => callback(settings);
+    ipcRenderer.on('app-settings:changed', handler);
+    return () => ipcRenderer.removeListener('app-settings:changed', handler);
+  },
   listShells: () => ipcRenderer.invoke('shells:list'),
 
   // Fast chat (OpenAI-compatible streaming)
@@ -384,6 +435,63 @@ const api: ElectronAPI = {
     ipcRenderer.on('relay:status', handler);
     return () => ipcRenderer.removeListener('relay:status', handler);
   },
+
+  // Companion browser extension: pairing window + channel status for Settings.
+  // The renderer only ever sees the 6-digit code and who is connected — the
+  // pairing token minted on success stays in main.
+  // --- Git repository pane ---
+  gitDetect: (dir) => ipcRenderer.invoke('git:detect', dir),
+  gitLog: (repo, options) => ipcRenderer.invoke('git:log', repo, options),
+  gitRefs: (repo) => ipcRenderer.invoke('git:refs', repo),
+  gitWorktrees: (repo) => ipcRenderer.invoke('git:worktrees', repo),
+  gitStatus: (repo) => ipcRenderer.invoke('git:status', repo),
+  gitStashes: (repo) => ipcRenderer.invoke('git:stashes', repo),
+  gitRemotes: (repo) => ipcRenderer.invoke('git:remotes', repo),
+  gitCommitDetail: (repo, sha) => ipcRenderer.invoke('git:commit-detail', repo, sha),
+  gitWorkingChanges: (repo, staged) => ipcRenderer.invoke('git:working-changes', repo, staged),
+  gitDiff: (repo, source, file, origFile) => ipcRenderer.invoke('git:diff', repo, source, file, origFile),
+  gitPatch: (repo, source, file) => ipcRenderer.invoke('git:patch', repo, source, file),
+
+  gitStage: (repo, paths) => ipcRenderer.invoke('git:stage', repo, paths),
+  gitUnstage: (repo, paths) => ipcRenderer.invoke('git:unstage', repo, paths),
+  gitDiscard: (repo, paths, untracked) => ipcRenderer.invoke('git:discard', repo, paths, untracked),
+  gitCommit: (repo, message, options) => ipcRenderer.invoke('git:commit', repo, message, options),
+  gitStashPush: (repo, options) => ipcRenderer.invoke('git:stash-push', repo, options),
+  gitStashAction: (repo, action, ref) => ipcRenderer.invoke('git:stash-action', repo, action, ref),
+
+  gitCheckout: (repo, ref, options) => ipcRenderer.invoke('git:checkout', repo, ref, options),
+  gitCreateBranch: (repo, name, startPoint, checkoutAfter) =>
+    ipcRenderer.invoke('git:create-branch', repo, name, startPoint, checkoutAfter),
+  gitDeleteBranch: (repo, name, options) => ipcRenderer.invoke('git:delete-branch', repo, name, options),
+  gitRenameBranch: (repo, from, to) => ipcRenderer.invoke('git:rename-branch', repo, from, to),
+  gitMerge: (repo, ref, options) => ipcRenderer.invoke('git:merge', repo, ref, options),
+  gitAbort: (repo, operation) => ipcRenderer.invoke('git:abort', repo, operation),
+  gitCreateTag: (repo, name, ref, message) => ipcRenderer.invoke('git:create-tag', repo, name, ref, message),
+  gitDeleteTag: (repo, name, remote) => ipcRenderer.invoke('git:delete-tag', repo, name, remote),
+  gitReset: (repo, ref, mode) => ipcRenderer.invoke('git:reset', repo, ref, mode),
+  gitRevert: (repo, sha) => ipcRenderer.invoke('git:revert', repo, sha),
+  gitCherryPick: (repo, sha) => ipcRenderer.invoke('git:cherry-pick', repo, sha),
+
+  gitFetch: (repo, options) => ipcRenderer.invoke('git:fetch', repo, options),
+  gitPull: (repo, options) => ipcRenderer.invoke('git:pull', repo, options),
+  gitPush: (repo, options) => ipcRenderer.invoke('git:push', repo, options),
+
+  gitWorktreeAdd: (repo, targetPath, options) => ipcRenderer.invoke('git:worktree-add', repo, targetPath, options),
+  gitWorktreeRemove: (repo, targetPath, force) => ipcRenderer.invoke('git:worktree-remove', repo, targetPath, force),
+  gitWorktreePrune: (repo) => ipcRenderer.invoke('git:worktree-prune', repo),
+  gitWorktreeLock: (repo, targetPath, lock) => ipcRenderer.invoke('git:worktree-lock', repo, targetPath, lock),
+
+  gitWatch: (paneId, repo) => ipcRenderer.invoke('git:watch', paneId, repo),
+  gitUnwatch: (paneId) => ipcRenderer.invoke('git:unwatch', paneId),
+  onGitChanged: (callback) => {
+    const handler = (_e: Electron.IpcRendererEvent, repoRoot: string) => callback(repoRoot);
+    ipcRenderer.on('git:changed', handler);
+    return () => { ipcRenderer.removeListener('git:changed', handler); };
+  },
+
+  extBeginPairing: () => ipcRenderer.invoke('ext:begin-pairing'),
+  extCancelPairing: () => ipcRenderer.invoke('ext:cancel-pairing'),
+  extGetStatus: () => ipcRenderer.invoke('ext:status'),
 
   // file:// URL of the bundled webview focus-bridge preload. Resolved
   // synchronously at load so a <webview> can set its `preload` attribute before

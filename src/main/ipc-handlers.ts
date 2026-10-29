@@ -20,9 +20,16 @@ import { applyAgentIntegrations } from './agent-integrations';
 import { applyTerminalMouseConfig } from './terminal-mouse-config';
 import { setTerminalOwnerResolver } from './agent-terminal-bridge';
 import { setBrowserOwnerResolver } from './agent-browser-bridge';
+import {
+  beginPairing, cancelPairing, isExtensionConnected, listExtensionClients, listExtensionSurfaces,
+} from './agent-browser-channel';
 import { setSqlOwnerResolver } from './agent-sql-bridge';
+import { registerGitIPCHandlers } from './git-ipc';
 import { setSftpOwnerResolver } from './agent-sftp-bridge';
 import { knownHostsStore } from './known-hosts-store';
+import { crashLog } from './crash-log';
+import { claudeAgentManager, listThreads } from './agent/claude-agent-manager';
+import { searchProjectFiles } from './agent/project-files';
 import { QuickChatManager } from './quick-chat';
 import { QuickChatHistoryStore } from './quick-chat-history-store';
 import { setQuickChatHotkey, setFocusModeHotkey, setCapturingQuickChatHotkey } from './quick-chat-hotkey-state';
@@ -48,8 +55,16 @@ import type {
   SftpTransferProgress,
   RemoteDirEntry,
   TodoImage,
+  ExtChannelStatus,
+  ExtPairingCode,
 } from '../shared/types';
+import type {
+  AgentApprovalDecision,
+  AgentPermissionMode,
+  AgentSessionOptions,
+} from '../shared/agent-types';
 import { joinRemote } from '../shared/sftp-format';
+import { normalizeBackgroundColor } from '../shared/background-theme';
 
 interface WriteWithSyncOptions {
   workspaceId: string;
@@ -68,14 +83,14 @@ const activeSyncs = new Map<string, AbortController>();
 
 const sftpSyncManager = new SFTPSyncManager();
 const sqlManager = new SQLManager();
-const sqlConnectionStore = new SQLConnectionStore();
-const appSettingsStore = new AppSettingsStore();
 const quickChatManager = new QuickChatManager();
-const quickChatHistoryStore = new QuickChatHistoryStore();
-// Seed the in-memory hotkey cache from persisted settings at module load so
-// before-input-event matching is correct from the first keystroke.
-setQuickChatHotkey(appSettingsStore.get().quickChatHotkey);
-setFocusModeHotkey(appSettingsStore.get().focusModeHotkey);
+// File-backed stores are created in registerIPCHandlers, not at import time:
+// this module is imported before app 'ready', i.e. before the legacy userData
+// migration has copied the old files in — loading here would miss them, and the
+// next save would overwrite the migrated data.
+let sqlConnectionStore: SQLConnectionStore;
+let appSettingsStore: AppSettingsStore;
+let quickChatHistoryStore: QuickChatHistoryStore;
 
 // Windows path (C:\dir\file.png) → the /mnt/<drive>/… form a CLI running inside
 // WSL can actually open. Anything else is returned untouched.
@@ -162,6 +177,17 @@ export function registerIPCHandlers(
     deleteEnvironment: (envId: string) => void;
   }
 ) {
+  sqlConnectionStore = new SQLConnectionStore();
+  appSettingsStore = new AppSettingsStore();
+  quickChatHistoryStore = new QuickChatHistoryStore();
+  // Seed the in-memory hotkey cache from persisted settings so
+  // before-input-event matching is correct from the first keystroke.
+  const initialSettings = appSettingsStore.get();
+  setQuickChatHotkey(initialSettings.quickChatHotkey);
+  setFocusModeHotkey(initialSettings.focusModeHotkey);
+  // Same for the Claude Code binary override used by agent panes.
+  claudeAgentManager.setBinaryPath(initialSettings.claudeBinaryPath ?? '');
+
   const getWinForEvent = (event: Electron.IpcMainInvokeEvent) =>
     deps.getWindowByWebContentsId(event.sender.id);
   const broadcast = (channel: string, ...args: unknown[]) => {
@@ -171,6 +197,9 @@ export function registerIPCHandlers(
       win.webContents.send(channel, ...args);
     }
   };
+
+  // Git pane: its own channels + the per-repository ref watchers.
+  const gitIPC = registerGitIPCHandlers(broadcast);
 
   // --- Session-to-window tracking (for cleanup on window close) ---
   const sessionOwner = new Map<string, number>(); // sessionId → webContentsId
@@ -386,53 +415,12 @@ export function registerIPCHandlers(
     };
   };
 
-  // --- Claude Code response detection ---
-  // Claude Code outputs specific patterns when it finishes a response:
-  // - The prompt char "❯" or ">" after a response block
-  // - Status line updates with specific escape sequences
-  // - The "╰─" closing border of a response box
-  // We track per-session state and emit an event when response completes.
-  const claudeDetectorState = new Map<string, { buffer: string; responding: boolean }>();
-
-  function detectClaudeResponse(sessionId: string, data: string) {
-    let state = claudeDetectorState.get(sessionId);
-    if (!state) {
-      state = { buffer: '', responding: false };
-      claudeDetectorState.set(sessionId, state);
-    }
-
-    // Append to rolling buffer (keep last 500 chars for pattern matching)
-    state.buffer = (state.buffer + data).slice(-500);
-    const buf = state.buffer;
-
-    // Detect Claude Code is actively responding (thinking/writing indicator or response content)
-    // Claude Code shows "╭─" at start of response blocks
-    if (buf.includes('╭') || buf.includes('Thinking') || buf.includes('Writing')) {
-      state.responding = true;
-    }
-
-    // Detect response completion: prompt reappears after a response
-    // Claude Code prompt: "❯ " or the input prompt after response
-    // Also detect "╰─" closing border followed by prompt
-    if (state.responding) {
-      // Strip ANSI escape sequences for cleaner matching
-      const clean = buf.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
-      // Claude Code shows ❯ prompt after completing
-      if (clean.includes('❯') && (clean.lastIndexOf('❯') > clean.lastIndexOf('╭'))) {
-        state.responding = false;
-        state.buffer = '';
-        sendToSessionOwner(sessionId, 'terminal:claude-response', sessionId);
-      }
-    }
-  }
-
   // Persistent callbacks — survive renderer reload
   terminalManager.setCallbacks({
     onData: (sessionId, data) => {
       sendToSessionOwner(sessionId, 'terminal:on-data', sessionId, data);
       // Mirror output to the web relay (no-op unless this terminal is shared).
       relayFeed(sessionId, data);
-      detectClaudeResponse(sessionId, data);
       // Agent-agnostic attention signal (any tool emitting a notify OSC).
       if (scanOscNotify(sessionId, data)) {
         broadcast('agent:notify', sessionId);
@@ -446,7 +434,6 @@ export function registerIPCHandlers(
       relayDropSession(sessionId);
       sessionOwner.delete(sessionId);
       lastTermSize.delete(sessionId);
-      claudeDetectorState.delete(sessionId);
       clearOscNotify(sessionId);
     },
     onError: (sessionId, message) => {
@@ -604,8 +591,10 @@ export function registerIPCHandlers(
   });
 
   ipcMain.handle('shell:open-external', async (_event, url: string) => {
-    // Only allow web/file schemes — never arbitrary protocol handlers.
-    if (typeof url === 'string' && /^(https?|file):\/\//i.test(url)) {
+    // Only allow web/mail schemes — never arbitrary protocol handlers, and not
+    // file:// either: links in model output reach this, and opening a local
+    // .command/.app via the OS would execute it (same rule as main.ts webviews).
+    if (typeof url === 'string' && /^(https?:\/\/|mailto:)/i.test(url)) {
       await shell.openExternal(url);
     }
   });
@@ -628,6 +617,10 @@ export function registerIPCHandlers(
 
   // --- Saved connections ---
 
+  // Saved connections are global: every environment window caches them, so any
+  // mutation is announced to ALL windows and each one refetches.
+  const broadcastConnectionsChanged = () => broadcast('connections:changed');
+
   ipcMain.handle('connections:list', async () => {
     return connectionStore.getAll();
   });
@@ -635,7 +628,9 @@ export function registerIPCHandlers(
   ipcMain.handle(
     'connections:save',
     async (_event, config: Omit<SSHConnectionConfig, 'id'>) => {
-      return connectionStore.add(config);
+      const saved = connectionStore.add(config);
+      broadcastConnectionsChanged();
+      return saved;
     }
   );
 
@@ -644,12 +639,43 @@ export function registerIPCHandlers(
     async (_event, id: string, config: Omit<SSHConnectionConfig, 'id'>) => {
       const updated = connectionStore.update(id, config);
       if (!updated) throw new Error('Connection not found');
+      broadcastConnectionsChanged();
       return updated;
     }
   );
 
   ipcMain.handle('connections:delete', async (_event, id: string) => {
     connectionStore.delete(id);
+    broadcastConnectionsChanged();
+  });
+
+  ipcMain.handle('connections:duplicate', async (_event, id: string) => {
+    const copy = connectionStore.duplicate(id);
+    if (!copy) throw new Error('Connection not found');
+    broadcastConnectionsChanged();
+    return copy;
+  });
+
+  ipcMain.handle('connections:groups', async () => connectionStore.getGroups());
+  ipcMain.handle('connections:group-create', async (_event, name: string) => {
+    connectionStore.createGroup(name);
+    broadcastConnectionsChanged();
+  });
+  ipcMain.handle('connections:group-rename', async (_event, from: string, to: string) => {
+    connectionStore.renameGroup(from, to);
+    broadcastConnectionsChanged();
+  });
+  ipcMain.handle('connections:group-delete', async (_event, name: string) => {
+    connectionStore.deleteGroup(name);
+    broadcastConnectionsChanged();
+  });
+  ipcMain.handle('connections:group-collapse', async (_event, name: string, collapsed: boolean) => {
+    connectionStore.setGroupCollapsed(name, !!collapsed);
+    broadcastConnectionsChanged();
+  });
+  ipcMain.handle('connections:move-to-group', async (_event, ids: string[], group: string | null) => {
+    connectionStore.moveToGroup(Array.isArray(ids) ? ids : [], group);
+    broadcastConnectionsChanged();
   });
 
   ipcMain.handle('connections:connect', async (event, savedId: string) => {
@@ -728,14 +754,26 @@ export function registerIPCHandlers(
 
   ipcMain.handle('app-settings:get', async () => appSettingsStore.get());
 
-  ipcMain.handle('app-settings:save', async (_event, settings: AppSettings) => {
+  // Takes a PATCH, merged here onto the stored settings: a window whose copy is
+  // stale (another environment saved since) must not write its old values back.
+  // Every window is then told the new settings.
+  ipcMain.handle('app-settings:save', async (_event, patch: Partial<AppSettings>) => {
     const prev = appSettingsStore.get();
-    appSettingsStore.save(settings);
+    appSettingsStore.save({ ...prev, ...patch });
     const next = appSettingsStore.get();
+    broadcast('app-settings:changed', next);
     // Refresh the cached hotkey so the change takes effect immediately, without
     // an app restart. Re-read (not the raw arg) so it's the normalized value.
     setQuickChatHotkey(next.quickChatHotkey);
     setFocusModeHotkey(next.focusModeHotkey);
+    claudeAgentManager.setBinaryPath(next.claudeBinaryPath ?? '');
+    // The window's own background (what shows through during a resize, and
+    // before the renderer paints on the next launch) has to follow the picked
+    // colour too, otherwise resizing flashes the previous one.
+    if (prev.backgroundColor !== next.backgroundColor) {
+      const color = normalizeBackgroundColor(next.backgroundColor);
+      for (const win of BrowserWindow.getAllWindows()) win.setBackgroundColor(color);
+    }
     // Install/uninstall the global agent artifacts when either the master opt-in
     // or the terminal-control sub-opt-in flips (the latter installs/removes just
     // the terminal skill + env while the master stays on).
@@ -848,6 +886,7 @@ export function registerIPCHandlers(
 
   ipcMain.handle('environment:set-name', async (_event, environmentId: string, name: string) => {
     deps.setEnvironmentName(environmentId, name);
+    deps.onRecentEnvironmentsChanged();
   });
 
   ipcMain.handle('environment:delete', async (_event, environmentId: string) => {
@@ -1020,7 +1059,10 @@ export function registerIPCHandlers(
         password: string;
       }
     ) => {
-      return sqlConnectionStore.add(payload);
+      const saved = sqlConnectionStore.add(payload);
+      // Global like SSH connections: every window's SQL panes refetch.
+      broadcast('sql-connections:changed');
+      return saved;
     }
   );
 
@@ -1031,12 +1073,15 @@ export function registerIPCHandlers(
       savedId: string,
       patch: Partial<Pick<SavedSQLConnection, 'label' | 'host' | 'port' | 'user' | 'database' | 'ssl' | 'filePath'>>
     ) => {
-      return sqlConnectionStore.update(savedId, patch);
+      const updated = sqlConnectionStore.update(savedId, patch);
+      broadcast('sql-connections:changed');
+      return updated;
     }
   );
 
   ipcMain.handle('sql-connections:delete', async (_event, savedId: string) => {
     sqlConnectionStore.delete(savedId);
+    broadcast('sql-connections:changed');
   });
 
   // --- File system ---
@@ -1284,6 +1329,7 @@ export function registerIPCHandlers(
           const full = path.join(dir, e.name);
           const rel = path.relative(localRoot, full).split(path.sep).join(path.posix.sep);
           if (e.name === '.git') continue; // never sync the git db
+          if (e.name === '.splitgrid') continue; // local-only workspace metadata
           if (matcher?.ignores(rel)) {
             skippedByGitIgnore += 1;
             continue;
@@ -1299,27 +1345,43 @@ export function registerIPCHandlers(
         aggregate.set(t.id, { ok: true, uploaded: 0 });
       }
 
-      for (const file of files) {
-        if (ac.signal.aborted) break;
+      // Resolve each target's connection once (not per file — each resolve
+      // decrypts the saved secret) and upload in parallel like push-paths. The
+      // walk above already applied .gitignore, so no per-file re-check.
+      const targetConfigs: Array<{ id: string; remoteRoot: string; cfg: ReturnType<typeof connectionStore.toConnectionConfig> }> = [];
+      for (const t of sync.targets) {
+        if (!t.enabled || !t.connectionId || t.remotePath.trim().length === 0) continue;
+        const saved = connectionStore.getAll().find((c) => c.id === t.connectionId);
+        const agg = aggregate.get(t.id);
+        if (!saved) {
+          if (agg && files.length) { agg.ok = false; agg.error = 'Saved SSH connection not found.'; }
+          continue;
+        }
+        try {
+          const cfg = connectionStore.toConnectionConfig(saved);
+          targetConfigs.push({ id: t.id, remoteRoot: t.remotePath.replace(/\\/g, '/').replace(/\/+$/, ''), cfg });
+        } catch (error) {
+          if (agg && files.length) { agg.ok = false; agg.error = (error as Error).message; }
+        }
+      }
+
+      await asyncPool(SFTP_CONCURRENCY, files, async (file) => {
+        if (ac.signal.aborted) return;
         const relativePosix = path
           .relative(localRoot, file)
           .split(path.sep)
           .join(path.posix.sep);
-        const result = await syncRelativePathToTargets(file, relativePosix, options);
-        if (result.skippedByGitIgnore) {
-          skippedByGitIgnore += 1;
-        }
-        for (const tr of result.targetResults) {
-          const prev = aggregate.get(tr.targetId);
-          if (!prev) continue;
-          if (tr.ok) {
-            prev.uploaded += 1;
-          } else {
-            prev.ok = false;
-            prev.error = tr.error;
+        for (const t of targetConfigs) {
+          const prev = aggregate.get(t.id);
+          const remoteFile = `${t.remoteRoot}/${relativePosix}`.replace(/\/{2,}/g, '/');
+          try {
+            await sftpSyncManager.syncFile(options.workspaceId, t.id, t.cfg, file, remoteFile);
+            if (prev) prev.uploaded += 1;
+          } catch (error) {
+            if (prev) { prev.ok = false; prev.error = (error as Error).message; }
           }
         }
-      }
+      }, ac.signal);
 
       const targetResults = Array.from(aggregate.entries()).map(([targetId, s]) => ({
         targetId,
@@ -1785,15 +1847,25 @@ export function registerIPCHandlers(
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
 
-  ipcMain.handle('dialog:select-directory', async (event) => {
-    const win = getWinForEvent(event);
-    if (!win) return null;
-    const result = await dialog.showOpenDialog(win, {
-      properties: ['openDirectory'],
-      title: 'Select Working Directory',
-    });
-    return result.canceled ? null : result.filePaths[0] ?? null;
-  });
+  ipcMain.handle(
+    'dialog:select-directory',
+    async (event, options?: { title?: string; buttonLabel?: string; createDirectory?: boolean }) => {
+      const win = getWinForEvent(event);
+      if (!win) return null;
+      const properties: Electron.OpenDialogOptions['properties'] = ['openDirectory'];
+      // macOS hides the picker's "New Folder" button unless we ask for it; on
+      // Windows/Linux the native folder picker already offers one. Every folder
+      // we pick here is a destination the user may not have created yet, so
+      // this is on by default and callers only opt *out*.
+      if (options?.createDirectory !== false) properties.push('createDirectory');
+      const result = await dialog.showOpenDialog(win, {
+        properties,
+        title: options?.title ?? 'Select Working Directory',
+        ...(options?.buttonLabel ? { buttonLabel: options.buttonLabel } : {}),
+      });
+      return result.canceled ? null : result.filePaths[0] ?? null;
+    }
+  );
 
   // --- File watching (for IDE external changes) ---
   const fileWatchers = new Map<string, ReturnType<typeof watch>>();
@@ -1832,12 +1904,18 @@ export function registerIPCHandlers(
     pendingFiles: Set<string>;
     debounceTimer: ReturnType<typeof setTimeout> | null;
     localRoot: string;
+    /** webContents that registered it — closed with that window only */
+    ownerId: number;
+    /** Panes sharing this id (two IDE panes on one root use the same id) */
+    refs: number;
   }
+  // Keyed by `${ownerId}\0${watchId}` so windows never tear down each other's.
   const dirWatchers = new Map<string, DirWatcher>();
+  const dirWatchKey = (ownerId: number, watchId: string) => `${ownerId}\0${watchId}`;
   const DIR_WATCH_DEBOUNCE_MS = 300;
 
-  const flushDirChanges = (watchId: string) => {
-    const dw = dirWatchers.get(watchId);
+  const flushDirChanges = (key: string) => {
+    const dw = dirWatchers.get(key);
     if (!dw) return;
     dw.debounceTimer = null;
 
@@ -1853,21 +1931,28 @@ export function registerIPCHandlers(
     }
   };
 
-  ipcMain.handle('fs:watch-directory', async (_event, watchId: string, dirPath: string) => {
-    // Close existing watcher for this ID
-    const existing = dirWatchers.get(watchId);
+  ipcMain.handle('fs:watch-directory', async (event, watchId: string, dirPath: string) => {
+    const ownerId = event.sender.id;
+    const key = dirWatchKey(ownerId, watchId);
+    const localRoot = path.resolve(dirPath);
+    // Same id + same root → another pane sharing it; just take a reference.
+    // Same id, different root → replace.
+    const existing = dirWatchers.get(key);
+    if (existing && existing.localRoot === localRoot) {
+      existing.refs += 1;
+      return;
+    }
     if (existing) {
       existing.watcher.close();
       if (existing.debounceTimer) clearTimeout(existing.debounceTimer);
-      dirWatchers.delete(watchId);
+      dirWatchers.delete(key);
     }
 
-    const localRoot = path.resolve(dirPath);
     try {
       const watcher = watch(localRoot, { recursive: true, persistent: false }, (_eventType, filename) => {
         if (!filename) return;
 
-        const dw = dirWatchers.get(watchId);
+        const dw = dirWatchers.get(key);
         if (!dw) return;
 
         // Skip hidden/system files and common non-source dirs
@@ -1882,31 +1967,34 @@ export function registerIPCHandlers(
         dw.pendingDirs.add(parentDir);
 
         if (dw.debounceTimer) clearTimeout(dw.debounceTimer);
-        dw.debounceTimer = setTimeout(() => flushDirChanges(watchId), DIR_WATCH_DEBOUNCE_MS);
+        dw.debounceTimer = setTimeout(() => flushDirChanges(key), DIR_WATCH_DEBOUNCE_MS);
       });
 
       watcher.on('error', () => {
-        dirWatchers.delete(watchId);
+        if (dirWatchers.get(key)?.watcher === watcher) dirWatchers.delete(key);
       });
 
-      dirWatchers.set(watchId, {
+      dirWatchers.set(key, {
         watcher,
         pendingDirs: new Set(),
         pendingFiles: new Set(),
         debounceTimer: null,
         localRoot,
+        ownerId,
+        refs: 1,
       });
     } catch (err) {
       console.error('[fs:watch-directory] failed:', (err as Error).message);
     }
   });
 
-  ipcMain.handle('fs:unwatch-directory', async (_event, watchId: string) => {
-    const dw = dirWatchers.get(watchId);
-    if (dw) {
+  ipcMain.handle('fs:unwatch-directory', async (event, watchId: string) => {
+    const key = dirWatchKey(event.sender.id, watchId);
+    const dw = dirWatchers.get(key);
+    if (dw && --dw.refs <= 0) {
       dw.watcher.close();
       if (dw.debounceTimer) clearTimeout(dw.debounceTimer);
-      dirWatchers.delete(watchId);
+      dirWatchers.delete(key);
     }
   });
 
@@ -1924,6 +2012,7 @@ export function registerIPCHandlers(
     pendingDirCreates: Set<string>; // absolute dir paths created → mkdir on remote
     pendingDeletes: Set<string>; // absolute file/dir paths removed → delete remote
     debounceTimer: ReturnType<typeof setTimeout> | null;
+    ownerId: number; // webContents that started it — stopped with that window only
   }
   const workspaceWatchers = new Map<string, WorkspaceWatcher>();
   const SYNC_DEBOUNCE_MS = 400;
@@ -2053,7 +2142,7 @@ export function registerIPCHandlers(
     await ww.watcher.close().catch(() => {});
   };
 
-  ipcMain.handle('sync:watch-workspace', async (_event, options: WriteWithSyncOptions) => {
+  ipcMain.handle('sync:watch-workspace', async (event, options: WriteWithSyncOptions) => {
     const { workspaceId, localRootPath } = options;
     await stopWorkspaceWatcher(workspaceId);
 
@@ -2091,6 +2180,7 @@ export function registerIPCHandlers(
         pendingDirCreates: new Set(),
         pendingDeletes: new Set(),
         debounceTimer: null,
+        ownerId: event.sender.id,
       });
 
       watcher
@@ -2184,6 +2274,15 @@ export function registerIPCHandlers(
 
   ipcMain.handle('clipboard:read-text', async () => {
     return clipboard.readText();
+  });
+
+  // --- Diagnostics ---
+  // A renderer error replaces the whole UI with the boot-error screen, which a
+  // user reports as "the app crashed" — but nothing about it survived the
+  // reload. Persist it next to the main-process trace instead. Fire-and-forget:
+  // the reporting path must never itself throw or await.
+  ipcMain.on('log:renderer-error', (_e, message: string) => {
+    if (typeof message === 'string' && message) crashLog(message.slice(0, 4000), 'renderer');
   });
 
   // --- Todo images ---
@@ -2295,6 +2394,118 @@ export function registerIPCHandlers(
     },
   );
 
+  // --- Claude Code agent panes ---
+  // Each pane owns one Agent SDK session in this process; events stream back
+  // over the single 'agent:event' channel, tagged with the pane's session id.
+
+  ipcMain.handle('agent:start-session', async (event, options: AgentSessionOptions) => {
+    const sessionId = await claudeAgentManager.createSession(event.sender.id, options);
+    return { sessionId };
+  });
+
+  // A pane unmounts on every workspace switch — it detaches, and reattaches on
+  // the way back, rather than killing and respawning the CLI.
+  ipcMain.handle('agent:attach-session', async (event, sessionId: string) => {
+    const events = claudeAgentManager.attach(event.sender.id, sessionId);
+    return events ? { ok: true, events } : { ok: false, events: [] };
+  });
+
+  ipcMain.handle('agent:detach-session', async (_e, sessionId: string) => {
+    claudeAgentManager.detach(sessionId);
+  });
+
+  ipcMain.handle('agent:send', async (_e, sessionId: string, text: string) => {
+    claudeAgentManager.send(sessionId, text);
+  });
+
+  ipcMain.handle('agent:interrupt', async (_e, sessionId: string) => {
+    await claudeAgentManager.interrupt(sessionId);
+  });
+
+  ipcMain.handle(
+    'agent:respond-approval',
+    async (_e, sessionId: string, requestId: string, decision: AgentApprovalDecision) => {
+      claudeAgentManager.respondToApproval(sessionId, requestId, decision);
+    },
+  );
+
+  ipcMain.handle(
+    'agent:respond-question',
+    async (_e, sessionId: string, requestId: string, answers: Record<string, string> | null) => {
+      claudeAgentManager.respondToQuestion(sessionId, requestId, answers);
+    },
+  );
+
+  ipcMain.handle(
+    'agent:set-permission-mode',
+    async (_e, sessionId: string, mode: AgentPermissionMode) => {
+      await claudeAgentManager.setPermissionMode(sessionId, mode);
+    },
+  );
+
+  ipcMain.handle('agent:set-model', async (_e, sessionId: string, model: string | undefined) => {
+    await claudeAgentManager.setModel(sessionId, model);
+  });
+
+  // Backs the composer's `@` picker: ranked project paths under a pane's cwd.
+  // The CLI expands the mention itself once the prompt reaches it — this is
+  // only the list the user chooses from.
+  ipcMain.handle(
+    'agent:search-files',
+    async (_e, root: string, query: string, limit?: number) =>
+      searchProjectFiles(root, query, limit ?? 12),
+  );
+
+  ipcMain.handle('agent:list-threads', async (_e, cwd: string) => listThreads(cwd));
+
+  ipcMain.handle('agent:note', async (_e, sessionId: string, text: string) => {
+    claudeAgentManager.note(sessionId, text);
+  });
+
+  ipcMain.handle('agent:context-usage', async (_e, sessionId: string) =>
+    claudeAgentManager.contextUsage(sessionId),
+  );
+
+  ipcMain.handle('agent:list-models', async (_e, sessionId: string) =>
+    claudeAgentManager.supportedModels(sessionId),
+  );
+
+  ipcMain.handle('agent:stop-session', async (_e, sessionId: string) => {
+    await claudeAgentManager.stop(sessionId, 'Pane closed.');
+  });
+
+  ipcMain.handle('agent:resume-id', async (_e, sessionId: string) =>
+    claudeAgentManager.resumeId(sessionId),
+  );
+
+  // --- Companion browser extension (pairing + status) ---
+  // The renderer drives the pairing WINDOW and reads who is connected; it never
+  // sees a token. Fields are mapped out one by one rather than spread, so a
+  // future field on the channel's own info types can't leak into the renderer.
+
+  ipcMain.handle('ext:begin-pairing', async (): Promise<ExtPairingCode> => beginPairing());
+
+  ipcMain.handle('ext:cancel-pairing', async (): Promise<void> => {
+    cancelPairing();
+  });
+
+  ipcMain.handle('ext:status', async (): Promise<ExtChannelStatus> => ({
+    connected: isExtensionConnected(),
+    clients: listExtensionClients().map((c) => ({
+      clientId: c.clientId,
+      browser: c.identity.browser,
+      version: c.identity.version,
+      connectedAt: c.connectedAt,
+    })),
+    surfaces: listExtensionSurfaces().map((s) => ({
+      surface: s.surface,
+      title: s.title,
+      url: s.url,
+      writable: s.writable,
+      browser: s.browser,
+    })),
+  }));
+
   // --- API for main.ts ---
   return {
     closeSessionsForWindow(webContentsId: number) {
@@ -2306,14 +2517,18 @@ export function registerIPCHandlers(
         terminalManager.closeSession(sessionId);
         sessionOwner.delete(sessionId);
       }
-      // Clean up workspace watchers
+      // Agent SDK sessions belong to the window that opened them, same as PTYs.
+      void claudeAgentManager.stopForWebContents(webContentsId);
+      // Clean up this window's workspace + directory watchers (other windows
+      // keep theirs — their renderers still believe they're registered).
       for (const [wid, ww] of workspaceWatchers) {
-        ww.watcher.close();
+        if (ww.ownerId !== webContentsId) continue;
+        void ww.watcher.close().catch(() => {});
         if (ww.debounceTimer) clearTimeout(ww.debounceTimer);
         workspaceWatchers.delete(wid);
       }
-      // Clean up directory watchers
       for (const [did, dw] of dirWatchers) {
+        if (dw.ownerId !== webContentsId) continue;
         dw.watcher.close();
         if (dw.debounceTimer) clearTimeout(dw.debounceTimer);
         dirWatchers.delete(did);
@@ -2329,6 +2544,7 @@ export function registerIPCHandlers(
       // keepalives stop burning CPU in the background.
       if (BrowserWindow.getAllWindows().length === 0) {
         sftpSyncManager.closeAll();
+        gitIPC.disposeAll();
       }
     },
     closeAllSftpSessions() {

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { PaneFocusButton } from './focusMode';
 import { Terminal } from '@xterm/xterm';
 import type { ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -16,6 +17,8 @@ import { dragHasPaths, getDroppedPaths } from './terminalDrop';
 import { pasteClipboardIntoTerminal } from './clipboardPaste';
 import { latinKey } from '../../shared/keyboard';
 import { promptStreamLogin } from './streamLoginPrompt';
+import { getBackgroundTheme, onBackgroundThemeChange } from '../theme';
+import { DEFAULT_BACKGROUND_COLOR, type DerivedBackgroundTheme } from '../../shared/background-theme';
 import type {
   TerminalRendererMetrics,
   TerminalSessionInfo,
@@ -68,13 +71,13 @@ const statusColors: Record<string, string> = {
 };
 
 const cursorDarkTerminalTheme: ITheme = {
-  background: '#141414',
+  background: DEFAULT_BACKGROUND_COLOR,
   foreground: '#E4E4E4EB',
   // Solid white, NO alpha: an 8-digit (#RRGGBBAA) cursor colour composites
   // wrong for the block cursor on Windows (Chromium/WebGL) and renders dark —
   // the glyph under it (cursorAccent) keeps it readable.
   cursor: '#FFFFFF',
-  cursorAccent: '#141414',
+  cursorAccent: DEFAULT_BACKGROUND_COLOR,
   selectionBackground: '#E4E4E41E',
   selectionInactiveBackground: '#E4E4E414',
   scrollbarSliderBackground: 'rgba(103, 103, 103, 0.31)',
@@ -97,6 +100,17 @@ const cursorDarkTerminalTheme: ITheme = {
   brightCyan: '#88C0D0',
   brightWhite: '#E4E4E4',
 };
+
+// The terminal paints on a canvas, so it can't inherit the CSS background: fold
+// the user's base colour (and the ANSI black derived from it) into the theme.
+function terminalThemeFor(theme: DerivedBackgroundTheme): ITheme {
+  return {
+    ...cursorDarkTerminalTheme,
+    background: theme.background,
+    cursorAccent: theme.background,
+    black: theme.surfaces.terminalBlack,
+  };
+}
 
 function disposeCachedTerminal(cacheKey: string) {
   const cached = terminalCache.get(cacheKey);
@@ -283,6 +297,7 @@ export const XtermTerminal: React.FC<XtermTerminalProps> = ({
   const [hintAnchor, setHintAnchor] = useState<SshHintAnchor | null>(null);
   const lastFitAtRef = useRef(0);
   const pendingFitRafRef = useRef<number | null>(null);
+  const trailingFitTimerRef = useRef<number | null>(null);
   const mountedOnceRef = useRef(false);
   const metricsRef = useRef({
     renderWriteCalls: 0,
@@ -326,7 +341,17 @@ export const XtermTerminal: React.FC<XtermTerminalProps> = ({
 
   const scheduleFit = (force = false) => {
     const now = performance.now();
-    if (!force && now - lastFitAtRef.current < FIT_THROTTLE_MS) return;
+    if (!force && now - lastFitAtRef.current < FIT_THROTTLE_MS) {
+      // Throttled — but the LAST resize of a burst (a splitter drag ending)
+      // must still be fitted, or the grid/PTY stay at the stale size.
+      if (trailingFitTimerRef.current === null) {
+        trailingFitTimerRef.current = window.setTimeout(() => {
+          trailingFitTimerRef.current = null;
+          scheduleFit(true);
+        }, FIT_THROTTLE_MS - (now - lastFitAtRef.current));
+      }
+      return;
+    }
     if (pendingFitRafRef.current !== null) {
       if (!force) return;
       cancelAnimationFrame(pendingFitRafRef.current);
@@ -424,7 +449,7 @@ export const XtermTerminal: React.FC<XtermTerminalProps> = ({
         scrollSensitivity: 1,
         smoothScrollDuration: VSCODE_TERMINAL_SMOOTH_SCROLL_DURATION_MS,
         tabStopWidth: 8,
-        theme: cursorDarkTerminalTheme,
+        theme: terminalThemeFor(getBackgroundTheme()),
       });
 
       const fitAddon = new FitAddon();
@@ -751,6 +776,10 @@ export const XtermTerminal: React.FC<XtermTerminalProps> = ({
         cancelAnimationFrame(pendingFitRafRef.current);
         pendingFitRafRef.current = null;
       }
+      if (trailingFitTimerRef.current !== null) {
+        window.clearTimeout(trailingFitTimerRef.current);
+        trailingFitTimerRef.current = null;
+      }
       if (writeState.raf !== null) {
         cancelAnimationFrame(writeState.raf);
         writeState.raf = null;
@@ -760,6 +789,10 @@ export const XtermTerminal: React.FC<XtermTerminalProps> = ({
       window.removeEventListener('resize', onWindowResize);
       window.removeEventListener('splitgrid:window-zoom', onWindowZoomChanged as EventListener);
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      // Free the WebGL slot now rather than at the 30s cache disposal, so a
+      // just-closed pane doesn't push a new one onto the DOM renderer. The
+      // visibility effect re-acquires on remount / re-run.
+      releaseWebglRenderer(terminal);
       const cachedOnCleanup = terminalCache.get(containerId);
       if (cachedOnCleanup) {
         unregisterWriter(cachedOnCleanup.sessionId);
@@ -792,6 +825,18 @@ export const XtermTerminal: React.FC<XtermTerminalProps> = ({
     scheduleFit(true);
   }, [zoomLevel]);
 
+  // Follow the app background. Also runs on mount so a terminal restored from
+  // the cache (created under an older colour) repaints in the current one.
+  useEffect(() => {
+    const apply = (theme: DerivedBackgroundTheme) => {
+      const terminal = terminalRef.current;
+      if (!terminal || terminal.options.theme?.background === theme.background) return;
+      terminal.options.theme = terminalThemeFor(theme);
+    };
+    apply(getBackgroundTheme());
+    return onBackgroundThemeChange(apply);
+  }, [session.id]);
+
   // Hold a budgeted WebGL context only while this pane is visible; release it
   // when hidden so the active workspace's terminals get the GPU slots (and the
   // process never exhausts Chromium's WebGL-context limit). See
@@ -811,7 +856,9 @@ export const XtermTerminal: React.FC<XtermTerminalProps> = ({
       }
     });
     return () => { cancelled = true; };
-  }, [visible]);
+    // containerId/session.id: the terminal effect above releases the slot on
+    // every re-run, so re-acquire after it re-runs too.
+  }, [visible, containerId, session.id]);
 
   useEffect(() => {
     if (!visibleRef.current) return;
@@ -900,6 +947,7 @@ export const XtermTerminal: React.FC<XtermTerminalProps> = ({
         >
           x
         </button>
+        <PaneFocusButton containerId={containerId} />
         <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: statusColors[session.status] || 'var(--text-muted)', flexShrink: 0 }} />
         <EditableTerminalName customName={customName} autoLabel={session.label} onRename={onRename} />
         <span style={{ fontSize: '10px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
@@ -1001,7 +1049,7 @@ export const XtermTerminal: React.FC<XtermTerminalProps> = ({
           overflow: 'hidden',
           display: 'block',
           minHeight: 0,
-          background: '#141414',
+          background: 'var(--bg-primary)',
           outline: dragOver ? '2px solid var(--accent-blue)' : 'none',
           outlineOffset: '-2px',
         }}

@@ -1,3 +1,29 @@
+import type {
+  GitBranch,
+  GitCommandResult,
+  GitCommitDetail,
+  GitDiffSides,
+  GitDiffSource,
+  GitFileChange,
+  GitLogOptions,
+  GitLogPage,
+  GitPaneState,
+  GitRemote,
+  GitRepoInfo,
+  GitStashEntry,
+  GitStatus,
+  GitTag,
+  GitWorktree,
+} from './git-types';
+import type {
+  AgentApprovalDecision,
+  AgentEvent,
+  AgentModelOption,
+  AgentPermissionMode,
+  AgentSessionOptions,
+  AgentThreadSummary,
+} from './agent-types';
+
 // --- SSH Connection ---
 
 export interface SSHConnectionConfig {
@@ -14,6 +40,8 @@ export interface SSHConnectionConfig {
   sudoPassword?: string;
   // Opt-in: offer to auto-fill the saved password at sudo/password prompts.
   offerSavedPassword?: boolean;
+  // Name of the group this connection is filed under (undefined = ungrouped).
+  group?: string;
 }
 
 export interface SavedConnection {
@@ -30,6 +58,15 @@ export interface SavedConnection {
   encryptedSudoPassword?: string;
   // Opt-in: offer to auto-fill the saved password at sudo/password prompts.
   offerSavedPassword?: boolean;
+  // Name of the group this connection is filed under (undefined = ungrouped).
+  group?: string;
+}
+
+// Saved-connection groups, global across environments. `groups` is the display
+// order and may hold empty groups; `collapsed` is the remembered fold state.
+export interface ConnectionGroupsState {
+  groups: string[];
+  collapsed: string[];
 }
 
 // --- SFTP file manager ---
@@ -143,7 +180,7 @@ export interface KillProcessResult {
 // (working/waiting/done) and completion notifications are an agent-only feature;
 // every other command just shows its name. Single source of truth shared by the
 // main-process metrics (deriveProcessLabel) and the renderer's view-state gating.
-export const AGENT_COMMANDS: readonly string[] = ['claude', 'codex', 'cursor'];
+export const AGENT_COMMANDS: readonly string[] = ['claude', 'codex', 'cursor', 'opencode'];
 
 // One process in a terminal's live process tree (the PTY root and everything it
 // spawned — shells, the Claude agent, and whatever the agent runs).
@@ -473,7 +510,7 @@ export interface SQLContainerState {
 
 // --- Layout containers ---
 
-export type ContainerContentType = 'empty' | 'terminal' | 'ide' | 'browser' | 'sql' | 'sftp' | 'ssh-connect';
+export type ContainerContentType = 'empty' | 'terminal' | 'ide' | 'browser' | 'sql' | 'sftp' | 'ssh-connect' | 'agent' | 'git';
 
 export interface IDETabState {
   filePath: string;
@@ -523,10 +560,28 @@ export interface ContainerContent {
   browserOwnerTerminal?: string;
   // SQL
   sqlState?: SQLContainerState;
+  // Git repository pane
+  gitState?: GitPaneState;
   // SFTP
   sftpConnectionId?: string;   // chosen saved connection
   sftpRemotePath?: string;     // last remote dir (persisted)
   sftpLocalPath?: string;      // last local dir (persisted)
+  // Claude Code agent pane (SDK-driven, not a PTY). The live session id is
+  // deliberately NOT persisted — it dies with the process; `agentResumeId` is
+  // Claude's own session id, which lets a reopened pane continue the thread.
+  agentCwd?: string;
+  /**
+   * The live main-process session this pane is bound to. Only meaningful within
+   * one app run — it is persisted with the workspace, and a stale id simply
+   * fails to attach on the next launch, which starts a fresh session (resumed
+   * from `agentResumeId`).
+   */
+  agentSessionId?: string;
+  agentModel?: string;
+  agentPermissionMode?: AgentPermissionMode;
+  agentResumeId?: string;
+  /** CLAUDE_CONFIG_DIR for this pane (separate account/config). Empty = default. */
+  agentConfigDir?: string;
 }
 
 export interface Container {
@@ -759,12 +814,32 @@ export interface AppSettings {
   // WRITING to the remote — upload, sync, mkdir/rename/delete. Exposes
   // SPLITGRID_SFTP_WRITE=1 as a capability hint. Undefined/false → read-only.
   agentSftpWrite?: boolean;
+  // Sub-opt-in (only meaningful while agentIntegrations is on): lets an agent
+  // drive a tab the user activated in their REAL browser through the companion
+  // extension — a second browser surface alongside the embedded panes. Read-only
+  // by default (info, text, html, screenshot). Undefined/false → the extension
+  // channel refuses every command.
+  agentChromeControl?: boolean;
+  // Sub-sub-opt-in (only meaningful while agentChromeControl is on): also allow
+  // ACTING in the page — eval, navigate, back/forward/reload. `eval` is arbitrary
+  // JS inside the user's logged-in session (it can click, submit and exfiltrate),
+  // which is why it is gated here rather than counted as a read.
+  // Undefined/false → read-only.
+  agentChromeWrite?: boolean;
+  // Base colour of the app background. Every other surface (panels, inputs,
+  // hovers, borders, terminal background) is derived from it — see
+  // shared/background-theme. Undefined → the default base (#141414). Values are
+  // clamped into a dark range; the UI is a dark theme.
+  backgroundColor?: string;
   // Makes the mouse wheel scroll tmux/screen by enabling mouse mode in the local
   // ~/.tmux.conf and ~/.screenrc (a SplitGrid-managed block). Trade-off: text
   // selection then goes through the multiplexer (hold Shift for native select).
   // Only edits config on this machine — remote tmux over SSH is unaffected.
   // Undefined/false → SplitGrid leaves those files alone.
   terminalMouseScroll?: boolean;
+  // Binary the Claude Code agent pane spawns. Empty/undefined → auto-detect
+  // (PATH, then the usual install locations).
+  claudeBinaryPath?: string;
 }
 
 /** One message in a Fast chat conversation. */
@@ -887,6 +962,47 @@ export interface RelayStatus {
   sharedCount: number;
 }
 
+// --- Companion browser extension ---
+// Read-only views of the extension channel (src/main/agent-browser-channel.ts)
+// for the Settings pairing block. The pairing TOKEN a successful pairing mints
+// is deliberately absent from every shape here — it never leaves main.
+
+/** One connected companion extension. */
+export interface ExtClientStatus {
+  /** Channel-assigned id, the `c1` in a `tab:c1.842` surface. */
+  clientId: string;
+  /** Display name of the browser holding the socket ("Chrome 141"). */
+  browser: string;
+  version: string;
+  connectedAt: number;
+}
+
+/** One tab the user handed to agents from the extension's popup. */
+export interface ExtSurfaceStatus {
+  /** Surface id an agent targets, e.g. `tab:c1.842`. */
+  surface: string;
+  title: string;
+  url: string;
+  /** The extension's per-tab interaction switch — the user's half of the write
+   * gate. Acting in the tab also needs `agentChromeWrite`, the desktop's half. */
+  writable: boolean;
+  browser: string;
+}
+
+/** Live state of the extension channel, polled by Settings. */
+export interface ExtChannelStatus {
+  connected: boolean;
+  clients: ExtClientStatus[];
+  surfaces: ExtSurfaceStatus[];
+}
+
+/** A one-time code the user types into the extension to pair it. */
+export interface ExtPairingCode {
+  code: string;
+  /** Epoch ms at which the code stops being accepted (EXT_PAIRING_TTL_MS out). */
+  expiresAt: number;
+}
+
 // --- Electron API ---
 
 export interface ElectronAPI {
@@ -900,12 +1016,13 @@ export interface ElectronAPI {
   onSessionReady(callback: (sessionId: string) => void): () => void;
   onSessionClosed(callback: (sessionId: string, exitedCleanly: boolean) => void): () => void;
   onError(callback: (sessionId: string, message: string) => void): () => void;
-  onClaudeResponse(callback: (sessionId: string) => void): () => void;
 
   getSavedConnections(): Promise<SavedConnection[]>;
   saveConnection(config: Omit<SSHConnectionConfig, 'id'>): Promise<SavedConnection>;
   updateConnection(id: string, config: Omit<SSHConnectionConfig, 'id'>): Promise<SavedConnection>;
   deleteSavedConnection(id: string): Promise<void>;
+  /** Copy a saved connection (with its stored secrets); returns the copy. */
+  duplicateConnection(id: string): Promise<SavedConnection>;
   connectSaved(id: string): Promise<TerminalSessionInfo>;
 
   getActiveSessions(): Promise<TerminalSessionInfo[]>;
@@ -1018,6 +1135,45 @@ export interface ElectronAPI {
   ): Promise<{ ok: boolean; transferred: number; total: number; errors: string[] }>;
   cancelSftpTransfer(transferId: string): Promise<{ ok: boolean }>;
   onSftpFmProgress(cb: (info: SftpTransferProgress) => void): () => void;
+
+  // --- Claude Code agent pane (Agent SDK, one live session per pane) ---
+  agentStartSession(options: AgentSessionOptions): Promise<{ sessionId: string }>;
+  /** Re-bind a live session to a remounted pane; replays what it already emitted. */
+  agentAttachSession(sessionId: string): Promise<{ ok: boolean; events: AgentEvent[] }>;
+  /** The pane went away (workspace switch); the session stays warm for a while. */
+  agentDetachSession(sessionId: string): Promise<void>;
+  agentSend(sessionId: string, text: string): Promise<void>;
+  agentInterrupt(sessionId: string): Promise<void>;
+  agentRespondApproval(
+    sessionId: string,
+    requestId: string,
+    decision: AgentApprovalDecision,
+  ): Promise<void>;
+  agentRespondQuestion(
+    sessionId: string,
+    requestId: string,
+    answers: Record<string, string> | null,
+  ): Promise<void>;
+  agentSetPermissionMode(sessionId: string, mode: AgentPermissionMode): Promise<void>;
+  agentSetModel(sessionId: string, model: string | undefined): Promise<void>;
+  /** Publish a pane-authored line into a session's transcript. */
+  agentNote(sessionId: string, text: string): Promise<void>;
+  /** Context-window breakdown for the pane's /status. */
+  agentContextUsage(sessionId: string): Promise<Record<string, unknown> | null>;
+  /** Past Claude threads for a directory — the pane's `/resume` list. */
+  agentListThreads(cwd: string): Promise<AgentThreadSummary[]>;
+  /** Models the running CLI offers for this session. */
+  agentListModels(sessionId: string): Promise<AgentModelOption[]>;
+  /** Ranked project paths for the composer's `@` picker. */
+  agentSearchFiles(
+    root: string,
+    query: string,
+    limit?: number,
+  ): Promise<{ path: string; isDirectory: boolean }[]>;
+  agentStopSession(sessionId: string): Promise<void>;
+  /** Claude's session id for this pane, to persist as a resume cursor. */
+  agentResumeId(sessionId: string): Promise<string | null>;
+  onAgentEvent(cb: (event: AgentEvent) => void): () => void;
   moveFile(srcPath: string, destPath: string): Promise<void>;
   createFile(filePath: string): Promise<void>;
   createDirectory(dirPath: string): Promise<void>;
@@ -1071,13 +1227,24 @@ export interface ElectronAPI {
   }) => void): () => void;
 
   selectPrivateKeyFile(): Promise<string | null>;
-  selectDirectory(): Promise<string | null>;
+  selectDirectory(options?: {
+    title?: string;
+    buttonLabel?: string;
+    /**
+     * Show a "New Folder" button in the picker (macOS hides it otherwise).
+     * Defaults to true — pass false only for pickers where creating a folder
+     * makes no sense.
+     */
+    createDirectory?: boolean;
+  }): Promise<string | null>;
   clipboardHasImage(): Promise<boolean>;
   clipboardSaveImageTemp(target?: 'wsl' | null): Promise<string | null>;
   /** Paths of files copied in the OS file manager ([] when there are none). */
   clipboardReadFilePaths(target?: 'wsl' | null): Promise<string[]>;
   clipboardWriteText(text: string): Promise<void>;
   clipboardReadText(): Promise<string>;
+  /** Append a renderer error/rejection to the crash log (fire-and-forget). */
+  logRendererError(message: string): void;
   /** Store an image pasted into a todo item; null when the bytes aren't an image. */
   todoSaveImage(bytes: Uint8Array): Promise<TodoImage | null>;
   /** Store the image on the OS clipboard — the fallback for a paste event that
@@ -1102,6 +1269,16 @@ export interface ElectronAPI {
   // Drop the pinned host key for host:port so the next connect re-pins the
   // server's current key (used by the "host key changed — accept?" recovery).
   forgetHostKey(host: string, port: number): Promise<void>;
+  // Connection groups (names are the identity). All mutations broadcast
+  // onSavedConnectionsChanged to every window.
+  getConnectionGroups(): Promise<ConnectionGroupsState>;
+  createConnectionGroup(name: string): Promise<void>;
+  renameConnectionGroup(from: string, to: string): Promise<void>;
+  deleteConnectionGroup(name: string): Promise<void>;
+  setConnectionGroupCollapsed(name: string, collapsed: boolean): Promise<void>;
+  moveConnectionsToGroup(ids: string[], group: string | null): Promise<void>;
+  // Fired in every window after saved connections or their groups change.
+  onSavedConnectionsChanged(callback: () => void): () => void;
 
   getWindowZoom(): number;
   setWindowZoom(level: number): void;
@@ -1181,6 +1358,8 @@ export interface ElectronAPI {
     patch: Partial<Pick<SavedSQLConnection, 'label' | 'host' | 'port' | 'user' | 'database' | 'ssl' | 'filePath'>>
   ): Promise<SavedSQLConnection>;
   sqlDeleteConnection(savedId: string): Promise<void>;
+  /** Fired in every window after saved SQL connections change. */
+  onSqlConnectionsChanged(callback: () => void): () => void;
 
   loadWorkspaceState(): Promise<WorkspaceState | null>;
   saveWorkspaceState(state: WorkspaceState): Promise<void>;
@@ -1189,7 +1368,10 @@ export interface ElectronAPI {
 
   // Global app settings (notification defaults)
   getAppSettings(): Promise<AppSettings>;
-  saveAppSettings(settings: AppSettings): Promise<void>;
+  /** Merge `patch` into the stored settings (only the keys it carries). */
+  saveAppSettings(patch: Partial<AppSettings>): Promise<void>;
+  /** Fired in every window after any window saved app settings. */
+  onAppSettingsChanged(callback: (settings: AppSettings) => void): () => void;
 
   // Fast chat: stream a chat completion from the configured OpenAI-compatible
   // endpoint. The renderer supplies the requestId (so it can subscribe before any
@@ -1310,6 +1492,79 @@ export interface ElectronAPI {
   // only streams terminals explicitly shared from their pane header.
   relaySetShare(sessionId: string, enabled: boolean, meta?: RelayShareMeta): void;
   onRelayStatus(callback: (status: RelayStatus) => void): () => void;
+
+  // Companion browser extension (agent control of a tab in the user's real
+  // browser). Pairing opens a short window in which the extension may exchange
+  // the returned code for a token; that token stays in main and is never sent
+  // here. Cancelling closes the window early; the status read is what Settings
+  // polls to show who is connected and which tabs are activated.
+  // --- Git repository pane -------------------------------------------------
+  // Every call runs the real `git` binary in the given repository root, so the
+  // user's own config, hooks and credential helpers apply. Mutating calls never
+  // reject: they resolve with git's exit status and stderr so the pane can show
+  // git's own message.
+  gitDetect(dir: string): Promise<GitRepoInfo | null>;
+  gitLog(repo: string, options?: GitLogOptions): Promise<GitLogPage>;
+  gitRefs(repo: string): Promise<{ branches: GitBranch[]; tags: GitTag[] }>;
+  gitWorktrees(repo: string): Promise<GitWorktree[]>;
+  gitStatus(repo: string): Promise<GitStatus>;
+  gitStashes(repo: string): Promise<GitStashEntry[]>;
+  gitRemotes(repo: string): Promise<GitRemote[]>;
+  gitCommitDetail(repo: string, sha: string): Promise<GitCommitDetail>;
+  gitWorkingChanges(repo: string, staged: boolean): Promise<GitFileChange[]>;
+  gitDiff(repo: string, source: GitDiffSource, file: string, origFile?: string | null): Promise<GitDiffSides>;
+  gitPatch(repo: string, source: GitDiffSource, file: string): Promise<string>;
+
+  gitStage(repo: string, paths: string[]): Promise<GitCommandResult>;
+  gitUnstage(repo: string, paths: string[]): Promise<GitCommandResult>;
+  /** Destructive: restores tracked paths and deletes the given untracked ones. */
+  gitDiscard(repo: string, paths: string[], untracked: string[]): Promise<GitCommandResult>;
+  gitCommit(
+    repo: string,
+    message: string,
+    options?: { amend?: boolean; signoff?: boolean; noVerify?: boolean },
+  ): Promise<GitCommandResult>;
+  gitStashPush(
+    repo: string,
+    options?: { message?: string; includeUntracked?: boolean; keepIndex?: boolean },
+  ): Promise<GitCommandResult>;
+  gitStashAction(repo: string, action: 'apply' | 'pop' | 'drop', ref: string): Promise<GitCommandResult>;
+
+  gitCheckout(repo: string, ref: string, options?: { newBranch?: string; force?: boolean }): Promise<GitCommandResult>;
+  gitCreateBranch(repo: string, name: string, startPoint?: string, checkoutAfter?: boolean): Promise<GitCommandResult>;
+  gitDeleteBranch(repo: string, name: string, options?: { force?: boolean; remote?: string }): Promise<GitCommandResult>;
+  gitRenameBranch(repo: string, from: string, to: string): Promise<GitCommandResult>;
+  gitMerge(repo: string, ref: string, options?: { noFf?: boolean; squash?: boolean; message?: string }): Promise<GitCommandResult>;
+  gitAbort(repo: string, operation: 'merge' | 'rebase' | 'cherry-pick' | 'revert'): Promise<GitCommandResult>;
+  gitCreateTag(repo: string, name: string, ref: string, message?: string): Promise<GitCommandResult>;
+  gitDeleteTag(repo: string, name: string, remote?: string): Promise<GitCommandResult>;
+  gitReset(repo: string, ref: string, mode: 'soft' | 'mixed' | 'hard'): Promise<GitCommandResult>;
+  gitRevert(repo: string, sha: string): Promise<GitCommandResult>;
+  gitCherryPick(repo: string, sha: string): Promise<GitCommandResult>;
+
+  gitFetch(repo: string, options?: { remote?: string; all?: boolean; prune?: boolean }): Promise<GitCommandResult>;
+  gitPull(repo: string, options?: { rebase?: boolean }): Promise<GitCommandResult>;
+  gitPush(
+    repo: string,
+    options?: { remote?: string; branch?: string; setUpstream?: boolean; force?: boolean; tags?: boolean },
+  ): Promise<GitCommandResult>;
+
+  gitWorktreeAdd(
+    repo: string,
+    targetPath: string,
+    options?: { ref?: string; newBranch?: string; detach?: boolean },
+  ): Promise<GitCommandResult>;
+  gitWorktreeRemove(repo: string, targetPath: string, force?: boolean): Promise<GitCommandResult>;
+  gitWorktreePrune(repo: string): Promise<GitCommandResult>;
+  gitWorktreeLock(repo: string, targetPath: string, lock: boolean): Promise<GitCommandResult>;
+
+  /** Start/stop watching a repo's .git for ref, HEAD and index changes. */
+  gitWatch(paneId: string, repo: string): Promise<boolean>;
+  gitUnwatch(paneId: string): Promise<void>;
+  onGitChanged(callback: (repoRoot: string) => void): () => void;
+  extBeginPairing(): Promise<ExtPairingCode>;
+  extCancelPairing(): Promise<void>;
+  extGetStatus(): Promise<ExtChannelStatus>;
 }
 
 declare global {

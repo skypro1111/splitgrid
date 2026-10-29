@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SplitGrid Browser Control</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <span class="brand">SplitGrid</span>
+      <span id="status" class="pill pill--off">…</span>
+    </header>
+
+    <p id="error" class="error" hidden></p>
+
+    <!-- Pairing: shown only while unpaired. -->
+    <section id="pairing" class="card" hidden>
+      <h2>Pair with SplitGrid</h2>
+      <p class="hint">Open SplitGrid → Settings → Browser control, then type the code it shows.</p>
+      <form id="pair-form" class="row">
+        <input
+          id="pair-code"
+          type="text"
+          inputmode="numeric"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="pairing code"
+          aria-label="Pairing code"
+        />
+        <button type="submit" class="btn btn--primary">Pair</button>
+      </form>
+    </section>
+
+    <!-- Paired: the device we answer to, and the way out. -->
+    <section id="paired" class="card card--quiet" hidden>
+      <div class="row row--split">
+        <span id="device" class="device"></span>
+        <button id="unpair" type="button" class="btn btn--ghost">Unpair</button>
+      </div>
+    </section>
+
+    <section id="active-section" hidden>
+      <h2 class="section-title">Under agent control</h2>
+      <ul id="active-list" class="list"></ul>
+    </section>
+
+    <section>
+      <h2 class="section-title">Open tabs</h2>
+      <ul id="tab-list" class="list"></ul>
+      <p id="tab-empty" class="hint" hidden>No pages you can hand over in this window.</p>
+    </section>
+
+    <footer class="foot">
+      Activation grants one origin. Leaving that origin ends control automatically.
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

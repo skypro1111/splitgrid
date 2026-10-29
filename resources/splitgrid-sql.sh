@@ -58,9 +58,11 @@ fi
 
 # Build a JSON array from "$@": escape each arg into a valid JSON string. awk is
 # used (not sed) because BSD/GNU sed differ on multi-line handling at EOF.
+# Other control chars (ESC, BEL, …) become \u00XX so the JSON stays valid;
+# `&&` doubles a backslash portably (busybox reads "\\\\" as one).
 argv=""
 for a in "$@"; do
-  esc=$(printf '%s' "$a" | awk 'BEGIN{ORS=""} {gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); gsub(/\t/,"\\t"); gsub(/\r/,"\\r"); if(NR>1) printf "\\n"; printf "%s",$0}')
+  esc=$(printf '%s' "$a" | awk 'BEGIN{ORS=""; for(i=1;i<32;i++) if(i!=9 && i!=10 && i!=13) c[sprintf("%c",i)]=sprintf("\\u%04x",i)} {gsub(/\\/,"&&"); gsub(/"/,"\\\""); gsub(/\t/,"\\t"); gsub(/\r/,"\\r"); for(k in c) if(index($0,k)) gsub(k,c[k]); if(NR>1) printf "\\n"; printf "%s",$0}')
   if [ -z "$argv" ]; then argv="\"$esc\""; else argv="$argv,\"$esc\""; fi
 done
 
@@ -87,8 +89,10 @@ if [ -n "$use_bridge" ]; then
   exit 0
 fi
 
-curl -s -m 40 -X POST "$endpoint" \
+# Payload on stdin, never argv: argv is world-readable (ps, /proc/<pid>/cmdline)
+# and this one carries the agent token plus whatever is being typed or run.
+printf '%s' "$payload" | curl -s -m 40 -X POST "$endpoint" \
   -H 'content-type: application/json' \
-  -d "$payload"
+  --data-binary @-
 echo
 exit 0

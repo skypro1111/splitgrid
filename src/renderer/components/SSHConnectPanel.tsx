@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
+import { PaneFocusButton } from './focusMode';
 import { SplitHorizontalIcon, SplitVerticalIcon } from './Icons';
 import { ConnectionSelector } from './ConnectionSelector';
 import { ConnectionEditorModal } from './ConnectionEditorModal';
 import type { SSHConnectionConfig, SavedConnection } from '../../shared/types';
 import { parseHostKeyChange, type HostKeyChange } from '../../shared/host-key';
+import { useConnectionGroups } from '../hooks/useConnectionGroups';
 
 // Embedded (in-container) SSH connection picker — the same surface as the SFTP
 // pane's chooser, replacing the old full-screen NewSessionDialog modal. Lives
@@ -12,6 +14,8 @@ import { parseHostKeyChange, type HostKeyChange } from '../../shared/host-key';
 // still delegated to the shared ConnectionEditorModal (a form, like Settings).
 
 interface SSHConnectPanelProps {
+  /** Owning container, for the header's focus toggle. */
+  containerId?: string;
   savedConnections: SavedConnection[];
   /** Connection ids used in this workspace, most-recent-first. */
   recentConnectionIds: string[];
@@ -27,6 +31,7 @@ interface SSHConnectPanelProps {
 }
 
 export const SSHConnectPanel: React.FC<SSHConnectPanelProps> = ({
+  containerId,
   savedConnections,
   recentConnectionIds,
   onConnect,
@@ -41,6 +46,7 @@ export const SSHConnectPanel: React.FC<SSHConnectPanelProps> = ({
   const [error, setError] = useState('');
   const [showEditor, setShowEditor] = useState(false);
   const [createdIds, setCreatedIds] = useState<string[]>([]);
+  const { groups } = useConnectionGroups();
   // When the server's host key differs from the pinned one, we don't fail with a
   // bare error — we surface both fingerprints and let the user accept the change.
   const [hostKeyPrompt, setHostKeyPrompt] = useState<{ change: HostKeyChange; savedId: string } | null>(null);
@@ -101,6 +107,7 @@ export const SSHConnectPanel: React.FC<SSHConnectPanelProps> = ({
           onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
           onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7'; }}
         />
+        {containerId && <PaneFocusButton containerId={containerId} />}
         <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 600, flex: 1 }}>Connect over SSH</span>
         <button onMouseDown={(e) => e.stopPropagation()} onClick={onSplitRight} title="Split right" style={iconBtnStyle}
           onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-hover)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
@@ -183,6 +190,7 @@ export const SSHConnectPanel: React.FC<SSHConnectPanelProps> = ({
 
       {showEditor && (
         <ConnectionEditorModal
+          groups={groups}
           onSave={onCreateConnection}
           onDone={(saved) => {
             setCreatedIds((prev) => [saved.id, ...prev.filter((id) => id !== saved.id)]);

@@ -69,7 +69,8 @@ export async function detectWslDistros(force = false): Promise<string[]> {
       cachedDistros = distros;
       return distros;
     } catch {
-      cachedDistros = [];
+      // Don't cache a failure: the first call can time out while the WSL service
+      // cold-starts, and that would hide every distro until the app restarts.
       return [];
     } finally {
       inFlight = null;

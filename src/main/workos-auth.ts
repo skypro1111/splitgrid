@@ -1,8 +1,9 @@
 import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import type { AuthSession, AuthUser } from '../shared/types';
+import { writeFileAtomicSync } from './atomic-write';
 
 // ─── WorkOS desktop auth (AuthKit, PKCE public client) ───────────────────────
 //
@@ -82,7 +83,7 @@ function persist(data: StoredAuth | null): void {
       const payload = Buffer.from(JSON.stringify(data), 'utf-8').toString('base64');
       record = { v: 1, enc: false, payload };
     }
-    writeFileSync(file, JSON.stringify(record), { encoding: 'utf-8', mode: 0o600 });
+    writeFileAtomicSync(file, JSON.stringify(record), { mode: 0o600 });
   } catch (e) {
     console.error('[auth] failed to persist tokens:', e);
   }

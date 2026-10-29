@@ -123,18 +123,24 @@ export const FileTable: React.FC<FileTableProps> = ({ provider, path, onPathChan
   const visibleKeys = useMemo(() => new Set(visibleCols.map((c) => c.key)), [visibleCols]);
 
   // ---- Load listing -------------------------------------------------------
+  // Each load takes a token; only the latest may land, so a slow listing of the
+  // directory just left can't overwrite the one now shown.
+  const loadToken = useRef(0);
   const load = useCallback(async () => {
+    const token = ++loadToken.current;
     setLoading(true);
     setLoadError('');
     try {
       const result = await provider.list(path);
+      if (token !== loadToken.current) return;
       setEntries(result);
       setSelected(new Set());
       setAnchor(null);
     } catch (err) {
+      if (token !== loadToken.current) return;
       setLoadError((err as Error).message || 'Failed to read directory');
     } finally {
-      setLoading(false);
+      if (token === loadToken.current) setLoading(false);
     }
   }, [provider, path]);
 

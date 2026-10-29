@@ -18,9 +18,26 @@ interface ToastEntry {
 }
 
 let nextId = 1;
-let globalAdd: ((t: Omit<ToastEntry, 'id'>) => number) | null = null;
-let globalUpdate: ((id: number, patch: Partial<Omit<ToastEntry, 'id'>>) => void) | null = null;
-let globalDismiss: ((id: number) => void) | null = null;
+
+// Every mounted ToastContainer registers here. A new toast goes to the most
+// recently mounted host that is currently visible (IDE panes in background
+// workspaces stay mounted but hidden), else to the app-level `fixed` fallback.
+// Ids are global, so update/dismiss fan out and each host ignores unknown ids.
+interface ToastHost {
+  add: (t: Omit<ToastEntry, 'id'>) => number;
+  update: (id: number, patch: Partial<Omit<ToastEntry, 'id'>>) => void;
+  dismiss: (id: number) => void;
+  fallback: boolean;
+  isVisible: () => boolean;
+}
+const hosts: ToastHost[] = [];
+
+function pickHost(): ToastHost | undefined {
+  for (let i = hosts.length - 1; i >= 0; i--) {
+    if (!hosts[i].fallback && hosts[i].isVisible()) return hosts[i];
+  }
+  return hosts.find((h) => h.fallback) ?? hosts[hosts.length - 1];
+}
 
 const AUTO_DISMISS_MS = 1000;
 
@@ -28,7 +45,7 @@ const AUTO_DISMISS_MS = 1000;
 export function toast(message: string, opts?: { type?: ToastType; detail?: string; duration?: number; action?: ToastAction }): number {
   const type = opts?.type ?? 'info';
   const duration = opts?.duration ?? (type === 'loading' ? 0 : AUTO_DISMISS_MS);
-  return globalAdd?.({ type, message, detail: opts?.detail, action: opts?.action, dismissAt: duration > 0 ? Date.now() + duration : 0 }) ?? 0;
+  return pickHost()?.add({ type, message, detail: opts?.detail, action: opts?.action, dismissAt: duration > 0 ? Date.now() + duration : 0 }) ?? 0;
 }
 
 toast.success = (message: string, detail?: string) => toast(message, { type: 'success', detail });
@@ -46,9 +63,9 @@ toast.update = (id: number, patch: { message?: string; detail?: string; type?: T
   } else if (patch.type && patch.type !== 'loading') {
     update.dismissAt = Date.now() + AUTO_DISMISS_MS;
   }
-  globalUpdate?.(id, update);
+  for (const h of hosts) h.update(id, update);
 };
-toast.dismiss = (id: number) => globalDismiss?.(id);
+toast.dismiss = (id: number) => { for (const h of hosts) h.dismiss(id); };
 
 const ICONS: Record<ToastType, React.ReactNode> = {
   info: (
@@ -73,9 +90,11 @@ const ICONS: Record<ToastType, React.ReactNode> = {
   ),
 };
 
-/** Renders inside the IDE container (not a portal). Place it as last child of a position:relative parent. */
-export const ToastContainer: React.FC = () => {
+/** Renders inside the IDE container (not a portal). Place it as last child of a position:relative parent.
+ *  `fixed` makes it the app-wide fallback host, pinned to the window corner. */
+export const ToastContainer: React.FC<{ fixed?: boolean }> = ({ fixed = false }) => {
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const timersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
   const remove = useCallback((id: number) => {
@@ -113,17 +132,25 @@ export const ToastContainer: React.FC = () => {
   }, [scheduleRemoval]);
 
   useEffect(() => {
-    globalAdd = add;
-    globalUpdate = update;
-    globalDismiss = remove;
-    return () => { globalAdd = null; globalUpdate = null; globalDismiss = null; };
-  }, [add, update, remove]);
+    const host: ToastHost = {
+      add,
+      update,
+      dismiss: remove,
+      fallback: fixed,
+      // offsetParent is null when an ancestor is display:none (hidden workspace).
+      isVisible: () => !!rootRef.current?.offsetParent,
+    };
+    hosts.push(host);
+    return () => {
+      const i = hosts.indexOf(host);
+      if (i >= 0) hosts.splice(i, 1);
+    };
+  }, [add, update, remove, fixed]);
 
-  if (toasts.length === 0) return null;
-
+  // The (empty) wrapper always renders so visibility can be checked from it.
   return (
-    <div style={{
-      position: 'absolute', bottom: 12, right: 12, zIndex: 100,
+    <div ref={rootRef} style={{
+      position: fixed ? 'fixed' : 'absolute', bottom: 12, right: 12, zIndex: fixed ? 3000 : 100,
       display: 'flex', flexDirection: 'column-reverse', gap: 6, maxWidth: 300,
       pointerEvents: 'none',
     }}>

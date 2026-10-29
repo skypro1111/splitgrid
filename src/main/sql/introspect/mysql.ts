@@ -17,6 +17,12 @@ async function rows<T>(conn: Connection, sql: string, params: unknown[] = []): P
   return result as T[];
 }
 
+/** BIGINT/DECIMAL columns arrive as strings (the driver runs with bigNumberStrings). */
+function countOrUndefined(value: string | number | null): number | undefined {
+  const n = typeof value === 'string' ? Number(value) : value;
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
 export async function listDatabases(conn: Connection, currentDatabase: string): Promise<SQLDatabaseInfo[]> {
   const data = await rows<{ name: string; size_bytes: string | number | null }>(
     conn,
@@ -37,7 +43,7 @@ export async function listDatabases(conn: Connection, currentDatabase: string): 
 
 /** MySQL has no schemas; the connection's database becomes the single synthetic schema node. */
 export async function listSchemas(conn: Connection, database: string, supportsSequences: boolean): Promise<SQLSchemaTree[]> {
-  const tableRows = await rows<{ name: string; type: string; rows: number | null; bytes: number | null }>(
+  const tableRows = await rows<{ name: string; type: string; rows: string | number | null; bytes: string | number | null }>(
     conn,
     `select TABLE_NAME as name, TABLE_TYPE as type, TABLE_ROWS as \`rows\`,
             (coalesce(DATA_LENGTH,0) + coalesce(INDEX_LENGTH,0)) as bytes
@@ -61,8 +67,8 @@ export async function listSchemas(conn: Connection, database: string, supportsSe
   for (const r of tableRows) {
     const object: SQLSchemaObject = {
       name: r.name,
-      rowEstimate: typeof r.rows === 'number' ? r.rows : undefined,
-      totalBytes: typeof r.bytes === 'number' ? r.bytes : undefined,
+      rowEstimate: countOrUndefined(r.rows),
+      totalBytes: countOrUndefined(r.bytes),
     };
     if (r.type === 'VIEW') view.push({ name: r.name });
     else table.push(object);
