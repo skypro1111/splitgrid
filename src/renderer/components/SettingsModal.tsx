@@ -4,6 +4,7 @@ import { SOUNDS, SILENT_SOUND_ID, playSound } from '../sounds';
 import { SSHConnectionManager } from './SSHConnectionManager';
 import { Card, Row, Hint, Toggle, Segmented, PInput, PSelect, PTextarea, HotkeyRecorder, ghostBtnStyle } from './settings-ui';
 import { AgentChromeSettings } from './AgentChromeSettings';
+import { HistorySettings } from './HistorySettings';
 import { defaultQuickChatHotkey, defaultFocusModeHotkey } from '../../shared/quick-chat-hotkey';
 import {
   BACKGROUND_PRESETS,
@@ -27,6 +28,8 @@ interface SettingsModalProps {
   onDeleteConnection: (id: string) => Promise<void>;
   onDuplicateConnection: (id: string) => Promise<SavedConnection>;
   onTestConnection: (id: string) => Promise<{ ok: boolean; error?: string }>;
+  /** Workspace id → name, for Workspace history's per-workspace stats. */
+  workspaceNames?: Record<string, string>;
 }
 
 type Tab = 'general' | 'ssh' | 'fastChat' | 'account';
@@ -258,6 +261,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onDeleteConnection,
   onDuplicateConnection,
   onTestConnection,
+  workspaceNames,
 }) => {
   const [tab, setTab] = useState<Tab>(initialTab ?? 'general');
 
@@ -734,6 +738,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   write={!!draft.agentChromeWrite}
                   savedControl={!!settings.agentChromeControl}
                   onChange={set}
+                />
+              </Card>
+
+              {/* Acts immediately (consent → download), not through the draft:
+                  main persists historyEnabled once the install succeeded. */}
+              <Card title="Workspace history">
+                <HistorySettings
+                  enabled={!!settings.historyEnabled}
+                  distill={!!settings.historyDistill}
+                  integrations={!!draft.agentIntegrations}
+                  workspaceNames={workspaceNames}
                 />
               </Card>
 

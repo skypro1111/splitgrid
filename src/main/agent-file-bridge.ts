@@ -5,9 +5,10 @@ import { isAgentToken, processBrowserCommand, flattenBridgeResult } from './agen
 import { processTerminalCommand, flattenTerminalResult } from './agent-terminal-bridge';
 import { processSqlCommand, flattenSqlResult } from './agent-sql-bridge';
 import { processSftpCommand, flattenSftpResult } from './agent-sftp-bridge';
+import { processHistoryCommand, flattenHistoryResult } from './agent-history-bridge';
 import { processAgentPaneCommand, flattenAgentPaneResult } from './agent-pane-bridge';
 import { handleHookEvent } from './agent-activity-receiver';
-import { winPathToWsl } from './wsl-paths';
+import { winPathToWsl, wslPathToWin } from './wsl-paths';
 
 // ─── WSL file bridge ─────────────────────────────────────────────────────────
 // A claude running inside WSL cannot reach splitgrid's localhost HTTP receiver: in
@@ -19,7 +20,7 @@ import { winPathToWsl } from './wsl-paths';
 // no IP churn.
 //
 // Protocol (under <userData>/wsl-bridge):
-//   req/<id>.json   {kind:'hook'|'browser'|'terminal'|'sql'|'sftp'|'agent', terminal, token?, event?, argv?}
+//   req/<id>.json   {kind:'hook'|'browser'|'terminal'|'sql'|'sftp'|'history'|'agent', terminal, token?, event?, argv?, cwd?}
 //                   written atomically (…tmp → rename) so we never read a partial.
 //   res/<id>.json   the JSON reply (browser only); the helper reads then deletes.
 // We watch req/, dispatch, and for browser write res/<id>.json. Stale files are
@@ -59,7 +60,7 @@ async function processReqFile(name: string): Promise<void> {
     } catch {
       return; // already consumed / mid-rename
     }
-    let msg: { kind?: string; terminal?: string; token?: string; event?: string; argv?: unknown };
+    let msg: { kind?: string; terminal?: string; token?: string; event?: string; argv?: unknown; cwd?: unknown };
     try {
       msg = JSON.parse(raw);
     } catch {
@@ -165,6 +166,35 @@ async function processReqFile(name: string): Promise<void> {
         body = flattenSqlResult(await processSqlCommand(terminal, argv));
         // Note: SQL results need no path translation (no screenshots). Export-file
         // path translation, if any, is a Phase B/C concern once dispatch exists.
+      }
+      const tmp = path.join(resDir, `.${id}.tmp`);
+      const fin = path.join(resDir, `${id}.json`);
+      try {
+        writeFileSync(tmp, JSON.stringify(body), 'utf8');
+        renameSync(tmp, fin);
+      } catch (err) {
+        safeUnlink(tmp);
+        console.error('[file-bridge] reply write failed:', (err as Error).message);
+      }
+      safeUnlink(reqPath);
+      return;
+    }
+
+    if (msg.kind === 'history') {
+      const id = name.slice(0, -'.json'.length);
+      let body: Record<string, unknown>;
+      if (!isAgentToken(msg.token)) {
+        body = { ok: false, error: 'unauthorized' };
+      } else {
+        // The agent is inside the distro, so its $PWD and any path it names are
+        // /mnt/… — translate them to the host form the index was built from. A
+        // distro-native path (/home/…) has no host form and passes through.
+        const toHost = (p: string): string => wslPathToWin(p) ?? p;
+        const argv = (Array.isArray(msg.argv) ? msg.argv.filter((a): a is string => typeof a === 'string') : [])
+          .map((a, i) => (i > 0 && a.startsWith('/mnt/') ? toHost(a) : a));
+        const cwd = typeof msg.cwd === 'string' ? toHost(msg.cwd) : '';
+        body = flattenHistoryResult(await processHistoryCommand(terminal, argv, cwd));
+        if (typeof body.file === 'string') body.file = winToWslPath(body.file);
       }
       const tmp = path.join(resDir, `.${id}.tmp`);
       const fin = path.join(resDir, `${id}.json`);

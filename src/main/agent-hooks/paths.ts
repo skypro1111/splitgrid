@@ -92,6 +92,18 @@ export function sftpHelperPath(posix = false): string {
 }
 
 /**
+ * Absolute path to the OS-appropriate workspace-history helper. Agents invoke
+ * this as `<path> <cmd> [args]` to search the archived Claude Code sessions of
+ * their workspace; it POSTs the argv + $PWD (tagged with $SPLITGRID_TERMINAL +
+ * $SPLITGRID_HISTORY_TOKEN) to splitgrid's /history endpoint and prints the JSON
+ * reply. `posix` forces the .sh variant (WSL terminals); see hookHelperPath.
+ */
+export function historyHelperPath(posix = false): string {
+  const name = (!posix && process.platform === 'win32') ? 'splitgrid-history.cmd' : 'splitgrid-history.sh';
+  return path.join(resourcesDir(), name);
+}
+
+/**
  * Absolute path to the OS-appropriate Claude Code pane helper. Agents invoke
  * this as `<path> <cmd> [args]` to inspect and drive the app's agent panes; it
  * POSTs the argv (tagged with $SPLITGRID_AGENT_TOKEN) to splitgrid's /agent
@@ -156,4 +168,14 @@ export function sqlSkillResourcePath(): string {
  */
 export function sftpSkillResourcePath(): string {
   return path.join(resourcesDir(), 'skills', 'sg-sftp', 'SKILL.md');
+}
+
+/**
+ * Absolute path to the bundled Claude Code skill that teaches an agent how to
+ * search its workspace's past sessions via $SPLITGRID_HISTORY_CLI. Installed
+ * into the agent's ~/.claude/skills/ only while workspace history is enabled
+ * (see agent-skills/installer).
+ */
+export function historySkillResourcePath(): string {
+  return path.join(resourcesDir(), 'skills', 'sg-history', 'SKILL.md');
 }

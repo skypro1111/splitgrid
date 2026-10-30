@@ -111,7 +111,9 @@ const config: ForgeConfig = {
       // better-sqlite3 carries a native .node binary that must live outside the
       // asar so dlopen can load it. AutoUnpackNativesPlugin also detects this,
       // but the explicit glob keeps it unpacked even after the copyModules hook.
-      unpack: '**/node_modules/{ssh2,node-pty,cpu-features,better-sqlite3}/**',
+      // The workspace-history worker thread is started from a file path, and
+      // worker_threads can't load a script from inside the archive.
+      unpack: '{**/node_modules/{ssh2,node-pty,cpu-features,better-sqlite3}/**,**/.vite/build/history-worker.js}',
     },
   },
   rebuildConfig: {},
@@ -141,6 +143,13 @@ const config: ForgeConfig = {
       build: [
         {
           entry: 'src/main.ts',
+          config: 'vite.main.config.ts',
+          target: 'main',
+        },
+        {
+          // Workspace history's worker thread (parsing + SQLite off the main
+          // thread); emitted as .vite/build/history-worker.js next to main.js.
+          entry: 'src/main/history/history-worker.ts',
           config: 'vite.main.config.ts',
           target: 'main',
         },

@@ -21,3 +21,15 @@ describe('rebaseSettingsDraft', () => {
     expect(rebaseSettingsDraft(draft, base, next)).toEqual({ ...next, defaultVolume: 0.9 });
   });
 });
+
+// historyEnabled is written by main (history:enable / history:disable) while the
+// modal is open; the draft must follow it and never write a stale value back.
+describe('historyEnabled flipped by main while the modal is open', () => {
+  it('is adopted by the draft and left out of the Save patch', () => {
+    const draft: AppSettings = { ...base, historyEnabled: false, muteAll: true };
+    const next: AppSettings = { ...base, historyEnabled: true };
+    const rebased = rebaseSettingsDraft(draft, { ...base, historyEnabled: false }, next);
+    expect(rebased.historyEnabled).toBe(true);
+    expect(settingsPatch(next, rebased)).toEqual({ muteAll: true });
+  });
+});

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { detectWslDistros, wslExePath } from './wsl';
-import { hookHelperPath, browserSkillResourcePath, terminalSkillResourcePath, sqlSkillResourcePath, sftpSkillResourcePath, agentPaneSkillResourcePath } from './agent-hooks/paths';
+import { hookHelperPath, browserSkillResourcePath, terminalSkillResourcePath, sqlSkillResourcePath, sftpSkillResourcePath, agentPaneSkillResourcePath, historySkillResourcePath } from './agent-hooks/paths';
 import { applyHooksToConfig } from './agent-hooks/installer';
 import { CLAUDE } from './agent-hooks/registry';
 import { winPathToWsl } from './wsl-paths';
@@ -22,6 +22,8 @@ import { decodeWslOutput } from './wsl-encoding';
 //   • the SFTP skill in ~/.claude/skills/sg-sftp/SKILL.md.
 //   • the Claude Code pane skill in ~/.claude/skills/sg-agent/SKILL.md (rides
 //     the terminal sub-opt-in, like on the host).
+//   • the history skill in ~/.claude/skills/sg-history/SKILL.md (gated on the
+//     history opt-in, like on the host).
 // Gated on the distro already having ~/.claude (Claude present); idempotent
 // (writes only when content actually changes).
 
@@ -30,6 +32,7 @@ const SKILL_REL_TERMINAL = '.claude/skills/sg-terminal/SKILL.md';
 const SKILL_REL_SQL = '.claude/skills/sg-sql/SKILL.md';
 const SKILL_REL_SFTP = '.claude/skills/sg-sftp/SKILL.md';
 const SKILL_REL_AGENT = '.claude/skills/sg-agent/SKILL.md';
+const SKILL_REL_HISTORY = '.claude/skills/sg-history/SKILL.md';
 // Previously-named skill dirs to clean up inside the distro (transit).
 const WSL_LEGACY_SKILL_DIRS = [
   'swapit-browser', 'swapit-terminal', 'swapit-sql',
@@ -41,6 +44,7 @@ const READ_MARK_SKILL_TERMINAL = '===SPLITGRID_SKILL_TERMINAL===';
 const READ_MARK_SKILL_SQL = '===SPLITGRID_SKILL_SQL===';
 const READ_MARK_SKILL_SFTP = '===SPLITGRID_SKILL_SFTP===';
 const READ_MARK_SKILL_AGENT = '===SPLITGRID_SKILL_AGENT===';
+const READ_MARK_SKILL_HISTORY = '===SPLITGRID_SKILL_HISTORY===';
 
 // Path translation + UTF-16/UTF-8 decoding live in shared pure modules
 // (wsl-paths / wsl-encoding) so they're unit-tested in one place.
@@ -82,7 +86,9 @@ const READ_SCRIPT =
   `echo;echo '${READ_MARK_SKILL_SFTP}';` +
   `cat "$HOME/${SKILL_REL_SFTP}" 2>/dev/null;` +
   `echo;echo '${READ_MARK_SKILL_AGENT}';` +
-  `cat "$HOME/${SKILL_REL_AGENT}" 2>/dev/null`;
+  `cat "$HOME/${SKILL_REL_AGENT}" 2>/dev/null;` +
+  `echo;echo '${READ_MARK_SKILL_HISTORY}';` +
+  `cat "$HOME/${SKILL_REL_HISTORY}" 2>/dev/null`;
 
 interface DistroState {
   hasClaude: boolean;
@@ -92,6 +98,7 @@ interface DistroState {
   sqlSkillText: string;
   sftpSkillText: string;
   agentSkillText: string;
+  historySkillText: string;
 }
 
 function parseReadOutput(out: string): DistroState {
@@ -102,21 +109,24 @@ function parseReadOutput(out: string): DistroState {
   const qIdx = out.indexOf(READ_MARK_SKILL_SQL);
   const fIdx = out.indexOf(READ_MARK_SKILL_SFTP);
   const aIdx = out.indexOf(READ_MARK_SKILL_AGENT);
+  const hIdx = out.indexOf(READ_MARK_SKILL_HISTORY);
   let settingsText = '';
   let skillText = '';
   let terminalSkillText = '';
   let sqlSkillText = '';
   let sftpSkillText = '';
   let agentSkillText = '';
-  if (sIdx >= 0 && kIdx >= 0 && tIdx >= 0 && qIdx >= 0 && fIdx >= 0 && aIdx >= 0) {
+  let historySkillText = '';
+  if (sIdx >= 0 && kIdx >= 0 && tIdx >= 0 && qIdx >= 0 && fIdx >= 0 && aIdx >= 0 && hIdx >= 0) {
     settingsText = out.slice(sIdx + READ_MARK_SETTINGS.length, kIdx).replace(/^\r?\n/, '').replace(/\r?\n$/, '');
     skillText = out.slice(kIdx + READ_MARK_SKILL.length, tIdx).replace(/^\r?\n/, '').replace(/\r?\n$/, '');
     terminalSkillText = out.slice(tIdx + READ_MARK_SKILL_TERMINAL.length, qIdx).replace(/^\r?\n/, '').replace(/\r?\n$/, '');
     sqlSkillText = out.slice(qIdx + READ_MARK_SKILL_SQL.length, fIdx).replace(/^\r?\n/, '').replace(/\r?\n$/, '');
     sftpSkillText = out.slice(fIdx + READ_MARK_SKILL_SFTP.length, aIdx).replace(/^\r?\n/, '').replace(/\r?\n$/, '');
-    agentSkillText = out.slice(aIdx + READ_MARK_SKILL_AGENT.length).replace(/^\r?\n/, '');
+    agentSkillText = out.slice(aIdx + READ_MARK_SKILL_AGENT.length, hIdx).replace(/^\r?\n/, '').replace(/\r?\n$/, '');
+    historySkillText = out.slice(hIdx + READ_MARK_SKILL_HISTORY.length).replace(/^\r?\n/, '');
   }
-  return { hasClaude, settingsText, skillText, terminalSkillText, sqlSkillText, sftpSkillText, agentSkillText };
+  return { hasClaude, settingsText, skillText, terminalSkillText, sqlSkillText, sftpSkillText, agentSkillText, historySkillText };
 }
 
 async function installInto(
@@ -127,9 +137,11 @@ async function installInto(
   sqlSkill: string,
   sftpSkill: string,
   agentSkill: string,
+  historySkill: string,
   terminalControl: boolean,
   sqlControl: boolean,
   sftpControl: boolean,
+  history: boolean,
 ): Promise<void> {
   let state: DistroState;
   try {
@@ -170,6 +182,9 @@ async function installInto(
   // Pane skill rides the terminal sub-opt-in, same as the host installer.
   const agentSkillOut = terminalControl && state.agentSkillText !== agentSkill ? agentSkill : null;
   const removeAgentSkill = !terminalControl && state.agentSkillText.trim() !== '';
+  // History skill rides the history opt-in, same as the host installer.
+  const historySkillOut = history && state.historySkillText !== historySkill ? historySkill : null;
+  const removeHistorySkill = !history && state.historySkillText.trim() !== '';
 
   if (
     settingsOut === null && skillOut === null
@@ -177,12 +192,13 @@ async function installInto(
     && sqlSkillOut === null && !removeSqlSkill
     && sftpSkillOut === null && !removeSftpSkill
     && agentSkillOut === null && !removeAgentSkill
+    && historySkillOut === null && !removeHistorySkill
   ) return; // already up to date
 
   // One write round-trip: base64-decode each payload into place. base64 has no
   // shell-special chars, so embedding it in a single-quoted heredoc-free script
   // is safe regardless of the file contents. settings.json is written atomically.
-  let script = `mkdir -p "$HOME/.claude" "$HOME/.claude/skills/sg-browser" "$HOME/.claude/skills/sg-terminal" "$HOME/.claude/skills/sg-sql" "$HOME/.claude/skills/sg-sftp" "$HOME/.claude/skills/sg-agent";`;
+  let script = `mkdir -p "$HOME/.claude" "$HOME/.claude/skills/sg-browser" "$HOME/.claude/skills/sg-terminal" "$HOME/.claude/skills/sg-sql" "$HOME/.claude/skills/sg-sftp" "$HOME/.claude/skills/sg-agent" "$HOME/.claude/skills/sg-history";`;
   // Transit: drop any previously-named skill dirs in the distro.
   for (const legacy of WSL_LEGACY_SKILL_DIRS) script += `rm -rf "$HOME/.claude/skills/${legacy}";`;
   if (settingsOut !== null) {
@@ -221,12 +237,19 @@ async function installInto(
   if (removeAgentSkill) {
     script += `rm -f "$HOME/${SKILL_REL_AGENT}";`;
   }
+  if (historySkillOut !== null) {
+    const b64 = Buffer.from(historySkillOut, 'utf8').toString('base64');
+    script += `printf '%s' '${b64}' | base64 -d > "$HOME/${SKILL_REL_HISTORY}";`;
+  }
+  if (removeHistorySkill) {
+    script += `rm -f "$HOME/${SKILL_REL_HISTORY}";`;
+  }
   script += `echo OK`;
 
   try {
     const res = await runInDistro(distro, script);
     if (res.includes('OK')) {
-      console.log(`[agent-wsl] ${distro}: installed${settingsOut !== null ? ' hooks' : ''}${skillOut !== null ? ' skill' : ''}${terminalSkillOut !== null ? ' terminal-skill' : ''}${removeTerminalSkill ? ' (removed terminal-skill)' : ''}${sqlSkillOut !== null ? ' sql-skill' : ''}${removeSqlSkill ? ' (removed sql-skill)' : ''}${sftpSkillOut !== null ? ' sftp-skill' : ''}${removeSftpSkill ? ' (removed sftp-skill)' : ''}${agentSkillOut !== null ? ' agent-skill' : ''}${removeAgentSkill ? ' (removed agent-skill)' : ''}`);
+      console.log(`[agent-wsl] ${distro}: installed${settingsOut !== null ? ' hooks' : ''}${skillOut !== null ? ' skill' : ''}${terminalSkillOut !== null ? ' terminal-skill' : ''}${removeTerminalSkill ? ' (removed terminal-skill)' : ''}${sqlSkillOut !== null ? ' sql-skill' : ''}${removeSqlSkill ? ' (removed sql-skill)' : ''}${sftpSkillOut !== null ? ' sftp-skill' : ''}${removeSftpSkill ? ' (removed sftp-skill)' : ''}${agentSkillOut !== null ? ' agent-skill' : ''}${removeAgentSkill ? ' (removed agent-skill)' : ''}${historySkillOut !== null ? ' history-skill' : ''}${removeHistorySkill ? ' (removed history-skill)' : ''}`);
     } else {
       console.error(`[agent-wsl] ${distro}: write returned unexpected output: ${res.slice(0, 120)}`);
     }
@@ -237,13 +260,13 @@ async function installInto(
 
 /**
  * Install/refresh splitgrid's Claude hooks + browser skill inside every detected WSL
- * distro that has Claude. The terminal, SQL and SFTP skills are each installed only
- * when their sub-opt-in (`terminalControl` / `sqlControl` / `sftpControl`) is on,
- * and removed when off.
+ * distro that has Claude. The terminal, SQL, SFTP and history skills are each
+ * installed only when their sub-opt-in (`terminalControl` / `sqlControl` /
+ * `sftpControl` / `history`) is on, and removed when off.
  * Windows-only; best-effort and idempotent; safe to call on every startup.
  * Fire-and-forget (returns a promise the caller may ignore).
  */
-export async function syncWslAgentArtifacts(terminalControl = false, sqlControl = false, sftpControl = false): Promise<void> {
+export async function syncWslAgentArtifacts(terminalControl = false, sqlControl = false, sftpControl = false, history = false): Promise<void> {
   if (process.platform !== 'win32') return;
 
   const hostHelper = hookHelperPath(true); // force the .sh helper (runs inside the distro)
@@ -288,6 +311,13 @@ export async function syncWslAgentArtifacts(terminalControl = false, sqlControl 
   }
   const agentSkill = readFileSync(agentSkillSrc, 'utf8');
 
+  const historySkillSrc = historySkillResourcePath();
+  if (!existsSync(historySkillSrc)) {
+    console.error(`[agent-wsl] bundled skill missing at ${historySkillSrc}`);
+    return;
+  }
+  const historySkill = readFileSync(historySkillSrc, 'utf8');
+
   let distros: string[];
   try {
     distros = await detectWslDistros();
@@ -296,7 +326,7 @@ export async function syncWslAgentArtifacts(terminalControl = false, sqlControl 
   }
   if (distros.length === 0) return;
 
-  await Promise.all(distros.map((d) => installInto(d, wslHookPath, skill, terminalSkill, sqlSkill, sftpSkill, agentSkill, terminalControl, sqlControl, sftpControl).catch((err) => {
+  await Promise.all(distros.map((d) => installInto(d, wslHookPath, skill, terminalSkill, sqlSkill, sftpSkill, agentSkill, historySkill, terminalControl, sqlControl, sftpControl, history).catch((err) => {
     console.error(`[agent-wsl] ${d}: ${(err as Error).message}`);
   })));
 }

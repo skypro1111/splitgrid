@@ -4,6 +4,7 @@ import { handleBrowserRequest, isKnownTerminal } from './agent-browser-bridge';
 import { handleTerminalRequest } from './agent-terminal-bridge';
 import { handleSqlRequest } from './agent-sql-bridge';
 import { handleSftpRequest } from './agent-sftp-bridge';
+import { handleHistoryRequest } from './agent-history-bridge';
 import { handleAgentPaneRequest } from './agent-pane-bridge';
 import { startExtensionChannel, stopExtensionChannel } from './agent-browser-channel';
 
@@ -147,6 +148,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     // Agent SFTP access (move files to/from the workspace's remote hosts) too.
     if ((req.url || '').startsWith('/sftp')) {
       await handleSftpRequest(raw, res);
+      return;
+    }
+    // Agent workspace-history search (past Claude Code sessions, read-only).
+    if ((req.url || '').startsWith('/history')) {
+      await handleHistoryRequest(raw, res);
       return;
     }
     // Claude Code pane control/inspection. Answered by the main process itself

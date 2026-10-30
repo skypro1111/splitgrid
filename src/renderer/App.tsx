@@ -28,6 +28,7 @@ import { useBrowserAgentBridge } from './hooks/useBrowserAgentBridge';
 import { useTerminalAgentBridge } from './hooks/useTerminalAgentBridge';
 import { useSqlAgentBridge } from './hooks/useSqlAgentBridge';
 import { useSftpAgentBridge } from './hooks/useSftpAgentBridge';
+import { useHistoryAgentBridge } from './hooks/useHistoryAgentBridge';
 import { setCommandListener } from './utils/commandCapture';
 import { applyBackgroundTheme } from './theme';
 
@@ -112,6 +113,10 @@ const App: React.FC = () => {
     workspaces: workspace.workspaces,
     savedConnections: terminals.savedConnections,
   });
+  // Agent history: main (which owns the session index) asks which workspace
+  // holds an agent's terminal; this answers from the live layout so the
+  // splitgrid-history helper only ever searches the caller's own workspace.
+  useHistoryAgentBridge({ workspaces: workspace.workspaces });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showResources, setShowResources] = useState(false);
   const [showEnvironmentPicker, setShowEnvironmentPicker] = useState(false);
@@ -1969,6 +1974,7 @@ const App: React.FC = () => {
           onDeleteConnection={terminals.deleteSavedConnection}
           onDuplicateConnection={terminals.duplicateConnection}
           onTestConnection={terminals.testSavedConnection}
+          workspaceNames={Object.fromEntries(workspace.workspaces.map((w) => [w.id, w.name]))}
         />
       )}
 

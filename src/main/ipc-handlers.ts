@@ -26,6 +26,7 @@ import {
 import { setSqlOwnerResolver } from './agent-sql-bridge';
 import { registerGitIPCHandlers } from './git-ipc';
 import { setSftpOwnerResolver } from './agent-sftp-bridge';
+import { setHistoryOwnerResolver } from './agent-history-bridge';
 import { knownHostsStore } from './known-hosts-store';
 import { crashLog } from './crash-log';
 import { claudeAgentManager, listThreads } from './agent/claude-agent-manager';
@@ -57,6 +58,10 @@ import type {
   TodoImage,
   ExtChannelStatus,
   ExtPairingCode,
+  HistoryActionResult,
+  HistoryDistillEstimate,
+  HistoryEstimate,
+  HistoryStatus,
 } from '../shared/types';
 import type {
   AgentApprovalDecision,
@@ -65,6 +70,7 @@ import type {
 } from '../shared/agent-types';
 import { joinRemote } from '../shared/sftp-format';
 import { normalizeBackgroundColor } from '../shared/background-theme';
+import { getHistoryService, setHistoryClaudeBinaryProvider, setHistoryWorkspacesProvider } from './history/service';
 
 interface WriteWithSyncOptions {
   workspaceId: string;
@@ -220,6 +226,9 @@ export function registerIPCHandlers(
   // that owns the calling terminal, not whichever window is focused.
   setSqlOwnerResolver((terminalId) => sessionOwner.get(terminalId));
   setSftpOwnerResolver((terminalId) => sessionOwner.get(terminalId));
+  // The history bridge asks the OWNING window which workspace holds a terminal,
+  // so a search is always scoped to the caller's own workspace.
+  setHistoryOwnerResolver((terminalId) => sessionOwner.get(terminalId));
 
   const sendToWebContents = (webContentsId: number, channel: string, ...args: unknown[]) => {
     const win = deps.getWindowByWebContentsId(webContentsId);
@@ -736,6 +745,9 @@ export function registerIPCHandlers(
   ipcMain.handle('workspace-state:save', async (event, state: WorkspaceState) => {
     const setId = deps.getWorkspaceSetIdByWebContentsId(event.sender.id);
     workspaceStore.save(state, setId);
+    // A new workspace or a changed folder may bring sessions into scope; the
+    // service debounces this and ignores it while history is off.
+    getHistoryService().notifyWorkspacesChanged();
   });
 
   ipcMain.handle('workspace-recent:list', async (event) => {
@@ -757,7 +769,13 @@ export function registerIPCHandlers(
   // Takes a PATCH, merged here onto the stored settings: a window whose copy is
   // stale (another environment saved since) must not write its old values back.
   // Every window is then told the new settings.
-  ipcMain.handle('app-settings:save', async (_event, patch: Partial<AppSettings>) => {
+  ipcMain.handle('app-settings:save', async (_event, raw: Partial<AppSettings>) => {
+    // historyEnabled is consent to a download and is owned by history:enable /
+    // history:disable below; a generic save may neither grant nor revoke it.
+    // historyDistill likewise (consent to run Claude Haiku: history:distill-*).
+    const patch = { ...raw };
+    delete patch.historyEnabled;
+    delete patch.historyDistill;
     const prev = appSettingsStore.get();
     appSettingsStore.save({ ...prev, ...patch });
     const next = appSettingsStore.get();
@@ -790,12 +808,138 @@ export function registerIPCHandlers(
         !!next.agentSqlWrite,
         !!next.agentSftpControl,
         !!next.agentSftpWrite,
+        !!next.historyEnabled,
       );
     }
     // Write/remove the managed mouse-mode block in ~/.tmux.conf & ~/.screenrc when
     // the toggle flips, so the wheel scrolls tmux/screen on this machine.
     if (!!prev.terminalMouseScroll !== !!next.terminalMouseScroll) {
       applyTerminalMouseConfig(!!next.terminalMouseScroll);
+    }
+  });
+
+  // --- Workspace history (opt-in; Settings → Workspace history) ---
+  // Consent is AppSettings.historyEnabled and only these handlers write it, so
+  // it can never become true without enable() having succeeded. A disable bumps
+  // `historyEpoch`: an enable still installing when the user turns the feature
+  // off must not persist `true` once it finishes.
+  const history = getHistoryService();
+  // Every environment's workspaces, not just the open windows': sessions of a
+  // workspace in another environment are indexed too. load() reads folder
+  // files, and status pushes ask for this every second while indexing, so the
+  // list is cached briefly.
+  let historyWorkspaces: { at: number; list: Array<{ id: string; workingDirectory: string | null }> } | null = null;
+  setHistoryWorkspacesProvider(() => {
+    if (historyWorkspaces && Date.now() - historyWorkspaces.at < 5_000) return historyWorkspaces.list;
+    const list = workspaceStore.listSetIds().flatMap((setId) =>
+      (workspaceStore.load(setId)?.workspaces ?? []).map((w) => ({ id: w.id, workingDirectory: w.workingDirectory })));
+    historyWorkspaces = { at: Date.now(), list };
+    return list;
+  });
+  let historyEpoch = 0;
+  const persistHistoryEnabled = (enabled: boolean) => {
+    const prev = appSettingsStore.get();
+    if (!!prev.historyEnabled === enabled) return;
+    appSettingsStore.save({ ...prev, historyEnabled: enabled });
+    const next = appSettingsStore.get();
+    broadcast('app-settings:changed', next);
+    // The sg-history skill + SPLITGRID_HISTORY_* env (and the /history gate) need
+    // both this consent and the agent-integrations master opt-in; re-apply so
+    // the skill appears/disappears with the toggle. With the master off nothing
+    // agent-facing exists to change, so leave the machine alone.
+    if (next.agentIntegrations) {
+      applyAgentIntegrations(
+        true,
+        !!next.agentTerminalControl,
+        !!next.agentSqlControl,
+        !!next.agentSqlWrite,
+        !!next.agentSftpControl,
+        !!next.agentSftpWrite,
+        !!next.historyEnabled,
+      );
+    }
+  };
+  const persistHistoryDistill = (on: boolean) => {
+    const prev = appSettingsStore.get();
+    if (!!prev.historyDistill === on) return;
+    appSettingsStore.save({ ...prev, historyDistill: on });
+    broadcast('app-settings:changed', appSettingsStore.get());
+  };
+  const historyError = (err: unknown) =>
+    (err instanceof Error ? err.message : String(err)) || 'Unknown error';
+  history.onStatus((status) => broadcast('history:status', status));
+  // Consent given in an earlier run: bring the service back up (a cached
+  // runtime is only re-verified, then indexing resumes). Without it, nothing.
+  if (initialSettings.historyEnabled) {
+    // Set before enable() so the first background pass already includes it.
+    if (initialSettings.historyDistill) history.setDistillEnabled(true);
+    void history.enable().catch((err) => console.error('[history] resume failed:', historyError(err)));
+  }
+
+  ipcMain.handle('history:get-status', async (): Promise<HistoryStatus> => history.getStatus());
+
+  // stat()s transcript files only — safe to call before consent.
+  ipcMain.handle('history:estimate', async (): Promise<HistoryEstimate> => history.estimate());
+
+  ipcMain.handle('history:enable', async (): Promise<HistoryActionResult> => {
+    const epoch = historyEpoch;
+    try {
+      await history.enable();
+    } catch (err) {
+      return { ok: false, error: historyError(err) };
+    }
+    if (epoch !== historyEpoch) return { ok: false, error: 'Workspace history was turned off while it was being set up.' };
+    persistHistoryEnabled(true);
+    return { ok: true };
+  });
+
+  // Consent is withdrawn first, so even a failing cleanup leaves the feature off.
+  ipcMain.handle('history:disable', async (_e, opts?: { deleteData?: boolean }): Promise<HistoryActionResult> => {
+    historyEpoch++;
+    persistHistoryEnabled(false);
+    // Distillation is a consent under history's: withdrawing history withdraws
+    // it, so re-enabling history never resumes model runs unasked.
+    persistHistoryDistill(false);
+    try {
+      await history.disable({ deleteData: opts?.deleteData === true });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: historyError(err) };
+    }
+  });
+
+  ipcMain.handle('history:pause', async () => { history.pause(); });
+  ipcMain.handle('history:resume', async () => { history.resume(); });
+
+  // --- Decision notes (opt-in under Workspace history) ---
+  // AppSettings.historyDistill is consent to run Claude Haiku through the
+  // user's Claude Code login; only these handlers (and history:disable) write it.
+  setHistoryClaudeBinaryProvider(() => appSettingsStore.get().claudeBinaryPath ?? '');
+
+  // Reads the index only; no model runs.
+  ipcMain.handle('history:distill-estimate', async (): Promise<HistoryDistillEstimate> => history.distillEstimate());
+
+  ipcMain.handle('history:distill-enable', async (): Promise<HistoryActionResult> => {
+    if (!appSettingsStore.get().historyEnabled || !history.getStatus().enabled) {
+      return { ok: false, error: 'Turn on workspace history first.' };
+    }
+    persistHistoryDistill(true);
+    history.setDistillEnabled(true);
+    return { ok: true };
+  });
+
+  ipcMain.handle('history:distill-disable', async (): Promise<HistoryActionResult> => {
+    persistHistoryDistill(false);
+    history.setDistillEnabled(false);
+    return { ok: true };
+  });
+
+  ipcMain.handle('history:delete-notes', async (): Promise<HistoryActionResult> => {
+    try {
+      await history.deleteNotes();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: historyError(err) };
     }
   });
 

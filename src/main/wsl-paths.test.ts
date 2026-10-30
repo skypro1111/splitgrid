@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { winPathToWsl } from './wsl-paths';
+import { winPathToWsl, wslPathToWin } from './wsl-paths';
 
 describe('winPathToWsl', () => {
   it('translates a backslash Windows path', () => {
@@ -22,5 +22,26 @@ describe('winPathToWsl', () => {
   });
   it('returns null for a UNC path', () => {
     expect(winPathToWsl('\\\\server\\share\\f')).toBeNull();
+  });
+});
+
+describe('wslPathToWin', () => {
+  it('translates a /mnt/<drive> path to a backslash Windows path', () => {
+    expect(wslPathToWin('/mnt/c/Users/me/project')).toBe('C:\\Users\\me\\project');
+  });
+  it('uppercases the drive letter', () => {
+    expect(wslPathToWin('/mnt/d/x')).toBe('D:\\x');
+  });
+  it('translates a bare drive mount to the drive root', () => {
+    expect(wslPathToWin('/mnt/c')).toBe('C:\\');
+  });
+  it('round-trips with winPathToWsl', () => {
+    expect(wslPathToWin(winPathToWsl('E:\\a\\b.ts') as string)).toBe('E:\\a\\b.ts');
+  });
+  it('returns null for a distro-native path', () => {
+    expect(wslPathToWin('/home/me/project')).toBeNull();
+  });
+  it('returns null for a relative path', () => {
+    expect(wslPathToWin('mnt/c/x')).toBeNull();
   });
 });

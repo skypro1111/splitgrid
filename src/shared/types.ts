@@ -23,6 +23,7 @@ import type {
   AgentSessionOptions,
   AgentThreadSummary,
 } from './agent-types';
+import type { HistoryDistillEstimate, HistoryEstimate, HistoryStatus } from './history';
 
 // --- SSH Connection ---
 
@@ -840,6 +841,19 @@ export interface AppSettings {
   // Binary the Claude Code agent pane spawns. Empty/undefined → auto-detect
   // (PATH, then the usual install locations).
   claudeBinaryPath?: string;
+  // Opt-in "workspace history": index this machine's Claude Code transcripts per
+  // workspace with a local embedding model so agents can search past sessions
+  // (sg-history skill). Undefined/false → nothing is downloaded, spawned, watched
+  // or written. Only main sets it — true once HistoryService.enable() succeeded
+  // (history:enable), false on history:disable; app-settings:save ignores it.
+  historyEnabled?: boolean;
+  // Opt-in under historyEnabled: distill settled sessions into decision notes
+  // with Claude Haiku, run through the user's own Claude Code login (plan
+  // limits on a subscription, API-rate billing with an API key). Undefined/
+  // false → no model is ever run. Only main sets it — history:distill-enable
+  // (after Settings showed the estimate) / history:distill-disable, and
+  // history:disable clears it; app-settings:save ignores it.
+  historyDistill?: boolean;
 }
 
 /** One message in a Fast chat conversation. */
@@ -995,6 +1009,20 @@ export interface ExtChannelStatus {
   clients: ExtClientStatus[];
   surfaces: ExtSurfaceStatus[];
 }
+
+// Workspace history (Settings → Workspace history). The contract lives with the
+// main-process service; re-exported type-only so the renderer can name it.
+export type {
+  HistoryDistillEstimate,
+  HistoryDistillStatus,
+  HistoryEstimate,
+  HistoryProgress,
+  HistoryStatus,
+  HistoryWorkspaceStats,
+} from './history';
+
+/** Outcome of history:enable / history:disable — an error is shown, not thrown. */
+export type HistoryActionResult = { ok: true } | { ok: false; error: string };
 
 /** A one-time code the user types into the extension to pair it. */
 export interface ExtPairingCode {
@@ -1457,6 +1485,17 @@ export interface ElectronAPI {
     data?: Record<string, unknown>;
     error?: string;
   }): void;
+  // Agent history: main asks which workspace holds a terminal (keyed by reqId);
+  // the renderer replies with `data: { workspaceId, workingDirectory }`.
+  onHistoryResolve(
+    callback: (payload: { reqId: string; terminal: string }) => void
+  ): () => void;
+  sendHistoryContext(payload: {
+    reqId: string;
+    ok: boolean;
+    data?: Record<string, unknown>;
+    error?: string;
+  }): void;
   // file:// URL of the bundled webview focus-bridge preload (static).
   webviewPreloadUrl: string;
 
@@ -1565,6 +1604,26 @@ export interface ElectronAPI {
   extBeginPairing(): Promise<ExtPairingCode>;
   extCancelPairing(): Promise<void>;
   extGetStatus(): Promise<ExtChannelStatus>;
+
+  // Workspace history (opt-in; see AppSettings.historyEnabled). getStatus and
+  // estimate are safe before consent (estimate only stat()s transcript files).
+  // enable = consent: installs the runtime and starts indexing; historyEnabled is
+  // persisted only once it succeeds. disable persists false first, then stops.
+  historyGetStatus(): Promise<HistoryStatus>;
+  historyEstimate(): Promise<HistoryEstimate>;
+  historyEnable(): Promise<HistoryActionResult>;
+  historyDisable(opts: { deleteData: boolean }): Promise<HistoryActionResult>;
+  historyPause(): Promise<void>;
+  historyResume(): Promise<void>;
+  // Decision notes (AppSettings.historyDistill), only while history is on.
+  // The estimate reads the index and runs no model; enable is the consent to
+  // run Claude Haiku. Deleting notes requires distillation to be off.
+  historyDistillEstimate(): Promise<HistoryDistillEstimate>;
+  historyDistillEnable(): Promise<HistoryActionResult>;
+  historyDistillDisable(): Promise<HistoryActionResult>;
+  historyDeleteNotes(): Promise<HistoryActionResult>;
+  /** Fired in every window whenever the service's status changes. */
+  onHistoryStatus(callback: (status: HistoryStatus) => void): () => void;
 }
 
 declare global {

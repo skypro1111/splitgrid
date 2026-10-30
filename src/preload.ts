@@ -398,6 +398,16 @@ const api: ElectronAPI = {
   },
   sendSftpResult: (payload) => ipcRenderer.send('sftp-agent:result', payload),
 
+  // Agent history: main asks which workspace holds the calling terminal; the
+  // renderer answers {workspaceId, workingDirectory} keyed by reqId. The search
+  // itself runs in main against the history index.
+  onHistoryResolve: (callback) => {
+    const handler = (_e: Electron.IpcRendererEvent, payload: { reqId: string; terminal: string }) => callback(payload);
+    ipcRenderer.on('history-agent:resolve', handler);
+    return () => ipcRenderer.removeListener('history-agent:resolve', handler);
+  },
+  sendHistoryContext: (payload) => ipcRenderer.send('history-agent:context', payload),
+
   // Static platform marker (resolved once at preload load time). Lets
   // renderer code branch on macOS vs Windows vs Linux without IPC churn.
   platform: process.platform,
@@ -492,6 +502,22 @@ const api: ElectronAPI = {
   extBeginPairing: () => ipcRenderer.invoke('ext:begin-pairing'),
   extCancelPairing: () => ipcRenderer.invoke('ext:cancel-pairing'),
   extGetStatus: () => ipcRenderer.invoke('ext:status'),
+
+  historyGetStatus: () => ipcRenderer.invoke('history:get-status'),
+  historyEstimate: () => ipcRenderer.invoke('history:estimate'),
+  historyEnable: () => ipcRenderer.invoke('history:enable'),
+  historyDisable: (opts) => ipcRenderer.invoke('history:disable', opts),
+  historyPause: () => ipcRenderer.invoke('history:pause'),
+  historyResume: () => ipcRenderer.invoke('history:resume'),
+  historyDistillEstimate: () => ipcRenderer.invoke('history:distill-estimate'),
+  historyDistillEnable: () => ipcRenderer.invoke('history:distill-enable'),
+  historyDistillDisable: () => ipcRenderer.invoke('history:distill-disable'),
+  historyDeleteNotes: () => ipcRenderer.invoke('history:delete-notes'),
+  onHistoryStatus: (callback) => {
+    const handler = (_e: Electron.IpcRendererEvent, status: import('./shared/types').HistoryStatus) => callback(status);
+    ipcRenderer.on('history:status', handler);
+    return () => { ipcRenderer.removeListener('history:status', handler); };
+  },
 
   // file:// URL of the bundled webview focus-bridge preload. Resolved
   // synchronously at load so a <webview> can set its `preload` attribute before

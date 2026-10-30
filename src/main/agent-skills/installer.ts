@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { browserSkillResourcePath, terminalSkillResourcePath, sqlSkillResourcePath, sftpSkillResourcePath, agentPaneSkillResourcePath } from '../agent-hooks/paths';
+import { browserSkillResourcePath, terminalSkillResourcePath, sqlSkillResourcePath, sftpSkillResourcePath, agentPaneSkillResourcePath, historySkillResourcePath } from '../agent-hooks/paths';
 
 // ─── Agent skill install ─────────────────────────────────────────────────────
 // Ships splitgrid's Claude Code skills into the agent's global skills dir so a
@@ -21,6 +21,9 @@ const SFTP_SKILL = 'sg-sftp';
 // Claude Code pane inspection/control rides the terminal sub-opt-in (same
 // privilege: prompting a pane is prompting an agent).
 const AGENT_PANE_SKILL = 'sg-agent';
+// Workspace history search: gated on the user's history opt-in (consent to
+// index transcripts), not on a separate agent sub-opt-in.
+const HISTORY_SKILL = 'sg-history';
 
 /** Claude's config dir: $CLAUDE_CONFIG_DIR if set, else ~/.claude. */
 function claudeConfigDir(): string {
@@ -64,11 +67,11 @@ function removeSkill(claudeDir: string, name: string): void {
 
 /**
  * Install (or refresh) the bundled skills into ~/.claude/skills. The browser
- * skill is always installed (master opt-in); the terminal, SQL and SFTP skills
- * are each installed only when their sub-opt-in is on, and removed when it's
- * off — so toggling a sub-opt-in off cleans up after itself.
+ * skill is always installed (master opt-in); the terminal, SQL, SFTP and history
+ * skills are each installed only when their sub-opt-in is on, and removed when
+ * it's off — so toggling a sub-opt-in off cleans up after itself.
  */
-export function syncInstalledAgentSkills(terminalControl: boolean, sqlControl = false, sftpControl = false): void {
+export function syncInstalledAgentSkills(terminalControl: boolean, sqlControl = false, sftpControl = false, history = false): void {
   const claudeDir = claudeConfigDir();
   // Only install when Claude Code is actually present on this machine.
   if (!existsSync(claudeDir)) return;
@@ -86,6 +89,8 @@ export function syncInstalledAgentSkills(terminalControl: boolean, sqlControl = 
   else removeSkill(claudeDir, SQL_SKILL);
   if (sftpControl) installSkill(claudeDir, SFTP_SKILL, sftpSkillResourcePath());
   else removeSkill(claudeDir, SFTP_SKILL);
+  if (history) installSkill(claudeDir, HISTORY_SKILL, historySkillResourcePath());
+  else removeSkill(claudeDir, HISTORY_SKILL);
 }
 
 /** Remove every bundled skill from ~/.claude/skills (only our own dirs). */
@@ -96,6 +101,7 @@ export function uninstallAgentSkills(): void {
   removeSkill(claudeDir, SQL_SKILL);
   removeSkill(claudeDir, SFTP_SKILL);
   removeSkill(claudeDir, AGENT_PANE_SKILL);
+  removeSkill(claudeDir, HISTORY_SKILL);
 }
 
 // Skill dir names this app shipped under previous names (the old product name

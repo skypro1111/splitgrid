@@ -38,6 +38,12 @@ const DEFAULTS: AppSettings = {
   // Off by default: SplitGrid does not edit ~/.tmux.conf / ~/.screenrc until the
   // user opts in. Toggling it writes/removes a managed mouse-mode block.
   terminalMouseScroll: false,
+  // Off by default: workspace history downloads, spawns, watches and writes
+  // nothing until the user consents in Settings (history:enable).
+  historyEnabled: false,
+  // Off by default: decision notes run Claude Haiku (plan limits or API money)
+  // only after a second, explicit consent (history:distill-enable).
+  historyDistill: false,
 };
 
 function clamp01(n: unknown, fallback: number): number {
@@ -124,6 +130,8 @@ export class AppSettingsStore {
         agentChromeWrite: typeof o.agentChromeWrite === 'boolean' ? o.agentChromeWrite : DEFAULTS.agentChromeWrite,
         terminalMouseScroll: typeof o.terminalMouseScroll === 'boolean' ? o.terminalMouseScroll : DEFAULTS.terminalMouseScroll,
         claudeBinaryPath: str(o.claudeBinaryPath).trim() || undefined,
+        historyEnabled: typeof o.historyEnabled === 'boolean' ? o.historyEnabled : DEFAULTS.historyEnabled,
+        historyDistill: typeof o.historyDistill === 'boolean' ? o.historyDistill : DEFAULTS.historyDistill,
       };
     } catch {
       return { ...DEFAULTS };
@@ -155,6 +163,9 @@ export class AppSettingsStore {
       agentChromeWrite: !!settings.agentChromeWrite,
       terminalMouseScroll: !!settings.terminalMouseScroll,
       claudeBinaryPath: str(settings.claudeBinaryPath).trim() || undefined,
+      // Strict: consent is a real `true`, never a merely truthy value.
+      historyEnabled: settings.historyEnabled === true,
+      historyDistill: settings.historyDistill === true,
     };
     const dir = path.dirname(this.filePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });

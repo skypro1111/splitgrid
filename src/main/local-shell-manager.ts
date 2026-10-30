@@ -9,7 +9,7 @@ import { execFile, spawn } from 'node:child_process';
 import { RECEIVER_PORT } from './agent-activity-receiver';
 import { BROWSER_TOKEN } from './agent-browser-bridge';
 import { bridgeDirPath } from './agent-file-bridge';
-import { hookHelperPath, browserHelperPath, terminalHelperPath, sqlHelperPath, sftpHelperPath, agentPaneHelperPath } from './agent-hooks/paths';
+import { hookHelperPath, browserHelperPath, terminalHelperPath, sqlHelperPath, sftpHelperPath, agentPaneHelperPath, historyHelperPath } from './agent-hooks/paths';
 import {
   detectWslDistros, isWslShell, wslDistroFromShell, wslShellFor, wslExePath,
 } from './wsl';
@@ -100,6 +100,22 @@ export function setAgentSftpWriteEnabled(enabled: boolean): void {
 }
 export function isAgentSftpWriteEnabled(): boolean {
   return sftpWriteEnabled;
+}
+
+// Sub-gate (only matters while agentIntegrationsEnabled): inject the
+// SPLITGRID_HISTORY_* env so an agent can search the archived Claude Code
+// sessions of its workspace. Mirrors AppSettings.historyEnabled — the user's
+// consent to index transcripts at all — so it is armed only when BOTH that and
+// the master opt-in are on (see agent-integrations). Read-only by construction.
+let historyAgentEnabled = false;
+export function setAgentHistoryEnabled(enabled: boolean): void {
+  historyAgentEnabled = enabled;
+}
+// Read accessor for the history bridge's hard-refuse gate — /history reuses the
+// SHARED agent token, so env-injection gating alone would not stop an agent
+// that holds it from POSTing.
+export function isAgentHistoryEnabled(): boolean {
+  return historyAgentEnabled;
 }
 
 // TEMP diagnostics for the WSL terminal crash: trace the spawn intent + outcome
@@ -1138,6 +1154,16 @@ export class LocalShellManager {
           if (sftpWriteEnabled) baseEnv.SPLITGRID_SFTP_WRITE = '1';
         }
 
+        // Agent history: this terminal's agent can search the past Claude Code
+        // sessions of its own workspace via the bundled helper. Same per-run
+        // secret as the other bridges (transcripts are private). Gated on the
+        // user's history opt-in; no write side exists.
+        if (historyAgentEnabled) {
+          baseEnv.SPLITGRID_HISTORY_ENDPOINT = `http://127.0.0.1:${RECEIVER_PORT}/history`;
+          baseEnv.SPLITGRID_HISTORY_CLI = historyHelperPath(isWsl);
+          baseEnv.SPLITGRID_HISTORY_TOKEN = BROWSER_TOKEN;
+        }
+
         // WSL terminals: env doesn't cross the Win32→Linux boundary unless listed
         // in WSLENV. /u shares Win→WSL only; /p path-translates the helper scripts
         // (C:\…\splitgrid-*.sh → /mnt/c/…). The .sh helpers themselves rewrite the
@@ -1181,6 +1207,12 @@ export class LocalShellManager {
               'SPLITGRID_SFTP_CLI/up',
               'SPLITGRID_SFTP_TOKEN/u',
               ...(sftpWriteEnabled ? ['SPLITGRID_SFTP_WRITE/u'] : []),
+            ] : []),
+            // Same for the history vars — only when that opt-in is on.
+            ...(historyAgentEnabled ? [
+              'SPLITGRID_HISTORY_ENDPOINT/u',
+              'SPLITGRID_HISTORY_CLI/up',
+              'SPLITGRID_HISTORY_TOKEN/u',
             ] : []),
             'SPLITGRID_BRIDGE_DIR/up',
           ];

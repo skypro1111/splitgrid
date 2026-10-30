@@ -28,6 +28,7 @@ import { startBrowserBridge } from './main/agent-browser-bridge';
 import { startTerminalBridge } from './main/agent-terminal-bridge';
 import { startSqlBridge } from './main/agent-sql-bridge';
 import { startSftpBridge } from './main/agent-sftp-bridge';
+import { startHistoryBridge } from './main/agent-history-bridge';
 import { startFileBridge } from './main/agent-file-bridge';
 import { initAgentIntegrations, migrateLegacyAgentArtifacts } from './main/agent-integrations';
 import { configureAgentDiagnostics } from './main/agent/agent-diagnostics';
@@ -40,6 +41,7 @@ import { TEMP_DISABLE_INPUT_INTERCEPTS } from './shared/runtime-flags';
 import { latinKey } from './shared/keyboard';
 import { getQuickChatHotkey, getFocusModeHotkey, isCapturingQuickChatHotkey } from './main/quick-chat-hotkey-state';
 import { hotkeyMatchesInput } from './shared/quick-chat-hotkey';
+import { getHistoryService } from './main/history/service';
 
 
 
@@ -476,6 +478,9 @@ app.on('ready', () => {
   // agent query/inspect/export against the SQL component in its workspace.
   startSqlBridge();
   startSftpBridge();
+  // Agent history: register the IPC reply channel the bridge uses to learn which
+  // workspace holds the calling terminal (the search itself runs in main).
+  startHistoryBridge();
   // WSL file bridge: hooks/browser requests from inside a distro arrive as files
   // (the localhost receiver is unreachable across the NAT + Windows Firewall).
   if (process.platform === 'win32') startFileBridge();
@@ -494,6 +499,7 @@ app.on('ready', () => {
     persistedSettings.agentSqlWrite ?? false,
     persistedSettings.agentSftpControl ?? false,
     persistedSettings.agentSftpWrite ?? false,
+    persistedSettings.historyEnabled ?? false,
   );
 });
 
@@ -524,6 +530,8 @@ app.on('before-quit', (event) => {
     // which is fire-and-forget and can lose the race with process exit.
     void claudeAgentManager.stopAll();
     ipcAPI?.closeAllSftpSessions();
+    // Stops llama-server if workspace history started one; a no-op otherwise.
+    void getHistoryService().dispose();
     return;
   }
   event.preventDefault();
