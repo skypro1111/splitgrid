@@ -9,6 +9,7 @@ import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import path from 'node:path';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
 // Modules copied verbatim (with their dep trees) into the packaged node_modules
 // by the packageAfterCopy hook, because the vite main bundle externalizes them.
@@ -135,6 +136,24 @@ const config: ForgeConfig = {
   hooks: {
     packageAfterCopy: async (_config, buildPath) => {
       copyModules(buildPath);
+    },
+    // The app ships without a Developer ID, but macOS still needs a VALID
+    // signature: packaging rewrites Info.plist and the resources after the
+    // stock Electron binary was signed, which leaves the bundle's ad-hoc
+    // signature broken ("invalid Info.plist", identifier com.github.Electron).
+    // UNUserNotificationCenter, behind Electron's Notification on macOS, then
+    // refuses to post, so system notifications never show. Re-seal the whole
+    // bundle ad-hoc once everything is in place.
+    postPackage: async (_config, { platform, outputPaths }) => {
+      if (platform !== 'darwin' || process.platform !== 'darwin') return;
+      for (const dir of outputPaths) {
+        for (const entry of fs.readdirSync(dir)) {
+          if (!entry.endsWith('.app')) continue;
+          const app = path.join(dir, entry);
+          execFileSync('codesign', ['--force', '--deep', '--sign', '-', app], { stdio: 'inherit' });
+          execFileSync('codesign', ['--verify', '--deep', '--strict', app], { stdio: 'inherit' });
+        }
+      }
     },
   },
   plugins: [

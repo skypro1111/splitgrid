@@ -60,7 +60,7 @@ async function processReqFile(name: string): Promise<void> {
     } catch {
       return; // already consumed / mid-rename
     }
-    let msg: { kind?: string; terminal?: string; token?: string; event?: string; argv?: unknown; cwd?: unknown };
+    let msg: { kind?: string; terminal?: string; token?: string; event?: string; payload?: unknown; argv?: unknown; cwd?: unknown };
     try {
       msg = JSON.parse(raw);
     } catch {
@@ -72,7 +72,7 @@ async function processReqFile(name: string): Promise<void> {
 
     if (msg.kind === 'hook') {
       // Fire-and-forget, like the HTTP /hook path (no token, no reply).
-      if (terminal && typeof msg.event === 'string') handleHookEvent(terminal, msg.event);
+      if (terminal && typeof msg.event === 'string') handleHookEvent(terminal, msg.event, msg.payload);
       safeUnlink(reqPath);
       return;
     }

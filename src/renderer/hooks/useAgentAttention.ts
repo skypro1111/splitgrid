@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
-import type { AppSettings, Workspace } from '../../shared/types';
+import type { AppSettings, ClaudeActivityState, Workspace } from '../../shared/types';
 import { useNotificationSound } from './useNotificationSound';
 
 export type AttentionKind = 'done' | 'waiting';
@@ -12,15 +12,24 @@ interface Options {
   switchWorkspace: (workspaceId: string) => void;
 }
 
-/** Title and body of the system notification for a terminal that needs attention. */
-export function attentionText(kind: AttentionKind, ws: Workspace, sessionId: string): { title: string; body: string } {
+/**
+ * Title and body of the system notification for a terminal that needs
+ * attention. The workspace leads the title, so it survives truncation. The body
+ * is `detail` when the agent's hooks gave one — its final reply for Done, the
+ * question or the tool call awaiting permission for Waiting — already one short
+ * line (main's agent-hook-detail), so the banner stays a banner.
+ */
+export function attentionText(kind: AttentionKind, ws: Workspace, sessionId: string, detail?: string): { title: string; body: string } {
   const c = ws.containers.find((x) => x.content.type === 'terminal' && x.content.terminalId === sessionId);
   const label = c?.content.customName?.trim() || c?.content.label || 'Terminal';
   return {
-    title: kind === 'done' ? `${label} — Done` : `${label} — waiting for you`,
-    body: kind === 'done' ? `Finished in workspace "${ws.name}"` : `Needs your input in workspace "${ws.name}"`,
+    title: `${ws.name} · ${label} — ${kind === 'done' ? 'Done' : 'waiting for you'}`,
+    body: detail?.trim() || (kind === 'done' ? 'Finished its turn' : 'Needs your input'),
   };
 }
+
+// The state a detail must have arrived with to describe this kind of attention.
+const DETAIL_STATE: Record<AttentionKind, ClaudeActivityState> = { done: 'idle', waiting: 'waiting' };
 
 /**
  * "An agent needs you" notifications: a sound (as before) plus, while the
@@ -36,6 +45,14 @@ export function useAgentAttention(options: Options) {
     getWorkspace: (id) => optsRef.current.getWorkspaces().find((w) => w.id === id),
   });
 
+  // The last activity line per terminal, with the state it came with. Written
+  // straight from the IPC event, which lands before the re-render that fires
+  // the Done/Waiting edge, so it is in place when notify runs.
+  const detailsRef = useRef(new Map<string, { state: ClaudeActivityState; detail?: string }>());
+  useEffect(() => window.electronAPI.onClaudeActivity(({ terminalId, state, detail }) => {
+    detailsRef.current.set(terminalId, { state, detail });
+  }), []);
+
   const notify = useCallback((kind: AttentionKind, sessionId: string, workspaceId: string) => {
     const settings = optsRef.current.getSettings();
     if (kind === 'waiting' && settings.notifyOnWaiting === false) return;
@@ -45,7 +62,9 @@ export function useAgentAttention(options: Options) {
     if (!ws || settings.muteAll || ws.notifyMuted || settings.systemNotifications === false) return;
     // In a focused window the sidebar badge and the sound already say it.
     if (document.hasFocus()) return;
-    void window.electronAPI.showAgentNotification({ workspaceId, sessionId, ...attentionText(kind, ws, sessionId) })
+    const last = detailsRef.current.get(sessionId);
+    const detail = last?.state === DETAIL_STATE[kind] ? last.detail : undefined;
+    void window.electronAPI.showAgentNotification({ workspaceId, sessionId, ...attentionText(kind, ws, sessionId, detail) })
       .catch(() => {});
   }, [playSound]);
 

@@ -374,7 +374,7 @@ const api: ElectronAPI = {
     return () => ipcRenderer.removeListener('agent-notification:activate', handler);
   },
   onClaudeActivity: (callback) => {
-    const handler = (_e: Electron.IpcRendererEvent, payload: { terminalId: string; state: 'working' | 'idle' | 'waiting' }) => callback(payload);
+    const handler = (_e: Electron.IpcRendererEvent, payload: { terminalId: string; state: 'working' | 'idle' | 'waiting'; detail?: string }) => callback(payload);
     ipcRenderer.on('claude-activity:state', handler);
     return () => ipcRenderer.removeListener('claude-activity:state', handler);
   },

@@ -7,11 +7,15 @@ import { handleSftpRequest } from './agent-sftp-bridge';
 import { handleHistoryRequest } from './agent-history-bridge';
 import { handleAgentPaneRequest } from './agent-pane-bridge';
 import { startExtensionChannel, stopExtensionChannel } from './agent-browser-channel';
+import { doneDetail, parseHookPayload, waitingDetail, type PendingTool } from './agent-hook-detail';
 
 // ─── Agent activity receiver ─────────────────────────────────────────────────
 // Agents launched inside a splitgrid terminal report their turn lifecycle by
-// invoking the bundled hook helper, which POSTs {terminal,event} to /hook here
-// (tagged with the $SPLITGRID_TERMINAL injected at spawn). Hooks are installed into
+// invoking the bundled hook helper, which POSTs to /hook?terminal=…&event=… here
+// (tagged with the $SPLITGRID_TERMINAL injected at spawn), with the agent's own
+// hook input as the body. That input supplies the line a notification shows
+// (agent-hook-detail): the final reply on Stop, the question or the tool call
+// awaiting permission while waiting. Hooks are installed into
 // each agent's global config by agent-hooks/installer. We map the event to a
 // three-state activity and broadcast it to the renderer:
 //   prompt-submit / start    -> 'working'  (turn started)
@@ -48,20 +52,23 @@ interface TermState {
   lastEventAt: number;
 }
 const stateByTerminal = new Map<string, TermState>();
+// The last tool call each terminal's agent announced (PreToolUse) that hasn't
+// finished: what a permission prompt, which doesn't name it, is about.
+const pendingToolByTerminal = new Map<string, PendingTool>();
 
-function broadcast(terminalId: string, state: ClaudeActivityState): void {
+function broadcast(terminalId: string, state: ClaudeActivityState, detail?: string): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
-    win.webContents.send('claude-activity:state', { terminalId, state });
+    win.webContents.send('claude-activity:state', { terminalId, state, ...(detail ? { detail } : {}) });
   }
 }
 
-function setState(terminalId: string, state: ClaudeActivityState): void {
+function setState(terminalId: string, state: ClaudeActivityState, detail?: string): void {
   const prev = stateByTerminal.get(terminalId);
   stateByTerminal.set(terminalId, { state, lastEventAt: Date.now() });
   if (prev?.state !== state) {
     console.log(`[activity] term=${terminalId.slice(0, 8)} -> ${state}`);
-    broadcast(terminalId, state);
+    broadcast(terminalId, state, detail);
   }
 }
 
@@ -76,23 +83,57 @@ const HOOK_EVENT_STATE: Record<string, ClaudeActivityState> = {
   waiting: 'waiting', permission: 'waiting',
 };
 
-export function handleHookEvent(terminal: string, event: string): void {
-  const state = HOOK_EVENT_STATE[event.trim().toLowerCase()];
+/** `rawPayload` is the agent's hook input (parsed JSON), when the helper sent it. */
+export function handleHookEvent(terminal: string, event: string, rawPayload?: unknown): void {
+  const ev = event.trim().toLowerCase();
+  let state = HOOK_EVENT_STATE[ev];
   if (!terminal || !state) return;
   // /hook carries no token (fire-and-forget by design), so only accept ids this
   // run actually created — otherwise junk ids would grow the map without bound.
   if (!isKnownTerminal(terminal)) return;
+  const payload = parseHookPayload(rawPayload);
+
+  if (ev === 'tool' && payload?.tool_name) {
+    if (payload.hook_event_name === 'PreToolUse') {
+      pendingToolByTerminal.set(terminal, { tool_name: payload.tool_name, tool_input: payload.tool_input });
+      // A question to the user arrives as a tool call, but the agent now waits on them.
+      if (payload.tool_name === 'AskUserQuestion') state = 'waiting';
+    } else if (payload.hook_event_name === 'PostToolUse') {
+      pendingToolByTerminal.delete(terminal);
+    }
+  }
+
   // "waiting" only counts mid-turn — a permission/question while working. The
   // SAME notification fires when the agent sits idle after a turn ("waiting for
   // your input"); that must NOT override the finished state, or the terminal
   // sticks on Waiting once output ends.
   if (state === 'waiting' && stateByTerminal.get(terminal)?.state !== 'working') return;
+
+  let detail: string | undefined;
+  if (state === 'waiting') {
+    detail = waitingDetail(payload, pendingToolByTerminal.get(terminal));
+  } else if (state === 'idle') {
+    pendingToolByTerminal.delete(terminal);
+    detail = doneDetail(payload);
+  } else if (ev !== 'tool') {
+    pendingToolByTerminal.delete(terminal);
+  }
   // Tool heartbeats fire on every tool call; only log when they actually change
   // state (setState logs transitions) to avoid flooding the console.
-  if (event.trim().toLowerCase() !== 'tool') {
+  if (ev !== 'tool') {
     console.log(`[hook] term=${terminal.slice(0, 8)} event=${event} -> ${state}`);
   }
-  setState(terminal, state);
+  setState(terminal, state, detail);
+}
+
+// Where the helper put the terminal and event: the query string (current
+// helpers, whose body is the agent's raw hook input) or, from older helpers, a
+// {terminal,event} body.
+function hookTarget(url: string | undefined): { terminal: string; event: string } | null {
+  const q = new URL(url || '/', 'http://localhost').searchParams;
+  const terminal = q.get('terminal');
+  const event = q.get('event');
+  return terminal && event ? { terminal, event } : null;
 }
 
 function readBody(req: IncomingMessage): Promise<Buffer> {
@@ -162,15 +203,22 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
     if ((req.url || '').startsWith('/hook')) {
-      let hook: any = null;
-      try { hook = JSON.parse(raw.toString('utf8') || '{}'); } catch { hook = null; }
-      if (hook && typeof hook.terminal === 'string' && typeof hook.event === 'string') {
-        handleHookEvent(hook.terminal, hook.event);
+      let body: unknown = null;
+      try { body = JSON.parse(raw.toString('utf8') || 'null'); } catch { body = null; }
+      const target = hookTarget(req.url);
+      const legacy = body as { terminal?: unknown; event?: unknown } | null;
+      if (target) {
+        handleHookEvent(target.terminal, target.event, body);
+      } else if (legacy && typeof legacy.terminal === 'string' && typeof legacy.event === 'string') {
+        handleHookEvent(legacy.terminal, legacy.event);
       }
     }
     res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
   } catch (err) {
     if (err instanceof BodyTooLargeError) {
+      // A hook whose input was huge (a Write of a large file) still counts.
+      const target = (req.url || '').startsWith('/hook') ? hookTarget(req.url) : null;
+      if (target) handleHookEvent(target.terminal, target.event);
       // Answer, then drop the connection so the rest of the body is never read.
       try {
         res.writeHead(413, { connection: 'close' }).end(() => req.destroy());
@@ -210,6 +258,7 @@ export function startActivityReceiver(): void {
       // A closed terminal leaves the owner map; forget its activity too.
       if (!isKnownTerminal(id)) {
         stateByTerminal.delete(id);
+        pendingToolByTerminal.delete(id);
         continue;
       }
       if (s.state !== 'idle' && now - s.lastEventAt > SAFETY_IDLE_MS) {
@@ -245,4 +294,5 @@ export function stopActivityReceiver(): void {
     sweepTimer = null;
   }
   stateByTerminal.clear();
+  pendingToolByTerminal.clear();
 }

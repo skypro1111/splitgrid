@@ -1481,7 +1481,8 @@ export interface ElectronAPI {
   // Agent activity (working/idle/waiting) reported by lifecycle hooks, keyed by
   // terminal session id ($SPLITGRID_TERMINAL).
   getClaudeActivity(): Promise<Record<string, ClaudeActivityState>>;
-  onClaudeActivity(callback: (payload: { terminalId: string; state: ClaudeActivityState }) => void): () => void;
+  /** `detail`: one short line for a notification — the final reply (idle) or the question / tool awaiting permission (waiting). */
+  onClaudeActivity(callback: (payload: { terminalId: string; state: ClaudeActivityState; detail?: string }) => void): () => void;
   // Agent-agnostic "needs attention" pulse from a notify OSC escape sequence in
   // any terminal's output (iTerm2 OSC 9 / kitty 99 / urxvt 777). Fires the
   // session id each time such a sequence is seen.

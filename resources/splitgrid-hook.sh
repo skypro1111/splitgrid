@@ -3,10 +3,15 @@
 #   splitgrid-hook.sh <event>          e.g. prompt-submit | stop | notification
 # Reports the event to splitgrid, tagged with the terminal id injected at spawn
 # ($SPLITGRID_TERMINAL). Designed to NEVER fail or stall the calling agent: short
-# timeout, all output/errors swallowed, always exits 0. Reads nothing from stdin
-# (the agent's hook payload is ignored — identity comes from the env var).
+# timeout, all output/errors swallowed, always exits 0. The agent's hook input
+# (JSON on stdin) is passed along as is: splitgrid takes the line a notification
+# shows from it (the final reply, the question, the tool awaiting permission).
+# Identity still comes from the env var, never from the payload.
 [ -n "$SPLITGRID_TERMINAL" ] || exit 0
 event="$1"
+# No stdin when run by hand from a terminal: don't wait for one.
+has_input=1
+[ -t 0 ] && has_input=0
 
 # WSL: the localhost receiver is unreachable from inside the distro (default-NAT
 # routes to the host only via the vEthernet gateway, which Windows Firewall drops;
@@ -17,7 +22,11 @@ event="$1"
 if [ -n "$WSL_DISTRO_NAME" ] && [ -n "$SPLITGRID_BRIDGE_DIR" ] && [ -d "$SPLITGRID_BRIDGE_DIR/req" ]; then
   id="$(date +%s%N 2>/dev/null)-$$"
   tmp="$SPLITGRID_BRIDGE_DIR/req/.$id.tmp"
-  printf '{"kind":"hook","terminal":"%s","event":"%s"}' "$SPLITGRID_TERMINAL" "$event" > "$tmp" 2>/dev/null \
+  payload=""
+  [ "$has_input" = 1 ] && payload=$(cat 2>/dev/null)
+  # Embedded only when it looks like a JSON object, so the file always parses.
+  case "$payload" in '{'*'}') ;; *) payload=null ;; esac
+  printf '{"kind":"hook","terminal":"%s","event":"%s","payload":%s}' "$SPLITGRID_TERMINAL" "$event" "$payload" > "$tmp" 2>/dev/null \
     && mv "$tmp" "$SPLITGRID_BRIDGE_DIR/req/$id.json" 2>/dev/null
   exit 0
 fi
@@ -53,7 +62,11 @@ if [ -n "$WSL_DISTRO_NAME" ]; then
     endpoint="$proto://$winhost:$port$reqpath"
   fi
 fi
-curl -s -m 2 -X POST "$endpoint" \
-  -H 'content-type: application/json' \
-  -d "{\"terminal\":\"$SPLITGRID_TERMINAL\",\"event\":\"$event\"}" >/dev/null 2>&1 || true
+# Terminal ids are UUIDs and events plain words, so the query needs no escaping.
+url="$endpoint?terminal=$SPLITGRID_TERMINAL&event=$event"
+if [ "$has_input" = 1 ]; then
+  curl -s -m 2 -X POST "$url" -H 'content-type: application/json' --data-binary @- >/dev/null 2>&1 || true
+else
+  curl -s -m 2 -X POST "$url" -H 'content-type: application/json' -d '{}' >/dev/null 2>&1 || true
+fi
 exit 0

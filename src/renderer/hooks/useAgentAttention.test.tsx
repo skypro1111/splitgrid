@@ -13,6 +13,7 @@ const WS = {
 const BASE: AppSettings = { defaultSoundId: 'x', defaultVolume: 0.5, muteAll: false };
 
 let activate: ((t: { workspaceId: string; sessionId: string }) => void) | undefined;
+let activity: ((p: { terminalId: string; state: 'working' | 'idle' | 'waiting'; detail?: string }) => void) | undefined;
 const show = vi.fn(async () => true);
 
 beforeEach(() => {
@@ -23,6 +24,7 @@ beforeEach(() => {
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     showAgentNotification: show,
     onAgentNotificationActivate: (cb: typeof activate) => { activate = cb; return () => {}; },
+    onClaudeActivity: (cb: typeof activity) => { activity = cb; return () => {}; },
   };
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -45,7 +47,20 @@ describe('useAgentAttention', () => {
     onDone('s1', 'w1');
     expect(playSound).toHaveBeenCalledTimes(1);
     expect(show).toHaveBeenCalledWith({ workspaceId: 'w1', sessionId: 's1', ...attentionText('done', WS, 's1') });
-    expect(attentionText('waiting', WS, 's1').title).toBe('claude — waiting for you');
+    expect(attentionText('waiting', WS, 's1').title).toBe('api · claude — waiting for you');
+  });
+
+  it('shows the agent\'s line: the final reply for Done, the question for Waiting', () => {
+    const { onDone, onWaiting } = setup();
+    activity?.({ terminalId: 's1', state: 'idle', detail: 'Fixed the flaky test.' });
+    onDone('s1', 'w1');
+    expect(show).toHaveBeenLastCalledWith(expect.objectContaining({ title: 'api · claude — Done', body: 'Fixed the flaky test.' }));
+    activity?.({ terminalId: 's1', state: 'waiting', detail: 'Ship it? Yes / No' });
+    onWaiting('s1', 'w1');
+    expect(show).toHaveBeenLastCalledWith(expect.objectContaining({ body: 'Ship it? Yes / No' }));
+    // A line from another state never stands in: Done right after a wait.
+    onDone('s1', 'w1');
+    expect(show).toHaveBeenLastCalledWith(expect.objectContaining({ body: 'Finished its turn' }));
   });
 
   it('stays in-app while focused, and respects the toggles and mutes', () => {
