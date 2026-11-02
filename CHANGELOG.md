@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.3.0 — 2026-11-02
+
+### Added
+
+- **Workspace history.** A searchable archive of past Claude Code sessions per
+  workspace, opt-in from **Settings → Workspace history** (nothing is
+  downloaded, spawned or written until you enable it; the download size, disk
+  use and first-import time are shown first). Transcripts whose folder lies in a
+  workspace are indexed locally (secrets redacted) and survive Claude Code's own
+  cleanup. Search is hybrid: semantic by default, exact match for identifiers,
+  paths and quoted phrases. Agents get a read-only `sg-history` skill (search,
+  `why <file>[:line]` links commits to the sessions behind them). Optional
+  decision notes, a separate opt-in, use Claude Haiku to summarize decisions and
+  gotchas from settled sessions.
+- **Agent zones.** Each agent gets one framed region of the layout for the
+  panes it opens (terminals, SSH, browser, SQL), instead of splitting your
+  panes all over the window. Panes open inside the zone in order, alternating
+  right and down (or `--split right|down`, `--at <pane>`); the frame's × closes
+  the whole zone. An agent can close only its own panes. Subagents get their
+  own zones with `--zone <name>`.
+- **Tray for background processes.** `sg-terminal open <label> --background`
+  puts a pane in a thin strip along the bottom of the agent's zone, so a dev
+  server or log tail stays visible without crowding the layout.
+- **System notifications.** When an agent finishes, or stops to wait for a
+  permission decision or an answer, while SplitGrid is in the background, an
+  OS notification appears; clicking it opens that workspace and focuses the
+  terminal. Waiting now also plays the notification sound. Both can be turned
+  off in **Settings → Notifications**.
+- **Browser pane works like Chrome.** Back, forward, reload and stop buttons,
+  DevTools, a loading bar, a retry panel when a page fails to load, a context
+  menu (Back, Forward, Reload, Inspect Element) and the usual shortcuts in the
+  page and in the address bar (⌘R / F5, ⇧⌘R, ⌘[ ⌘], Alt+←/→, mouse side
+  buttons, ⌘L, F12 / ⌥⌘I).
+- **"Long-running processes in panes"** setting (Settings → Agent integrations
+  → Terminal control). Off by default: simple background jobs stay background
+  jobs of the agent. On: every dev server, watcher and log tail goes in a tray
+  pane. SSH always opens in its own pane.
+
+### Changed
+
+- The `sg-*` agent skills were rewritten so agents pick them up reliably: they
+  now reach for the SplitGrid browser pane instead of headless Chrome or
+  Playwright, and for an SSH pane instead of running `ssh` from Bash.
+
+### Fixed
+
+- The browser pane opens local files (`docs/plan.html`, absolute paths, Windows
+  and UNC paths) and scheme-less `localhost:5173` / LAN addresses directly
+  instead of turning them into a Google search. The agent CLI resolves a
+  relative path first (and converts it inside WSL).
+- Browser pane: the first Back no longer lands on a blank page or forgets the
+  saved URL, reload after a failed load reloads the right page, ⇧⌘R no longer
+  reloads the whole SplitGrid window, and ⌥⌘I opens the page's DevTools rather
+  than the app's.
+
 ## 1.2.0 — 2026-10-29
 
 ### Added
