@@ -15,6 +15,10 @@ export interface ParsedArgv {
   timeoutMs?: number;
   viewport: boolean;
   full: boolean;
+  /** Agent-zone flags for pane-opening commands (see shared/agent-zones). */
+  zone?: string;
+  at?: string;
+  split?: string;
 }
 
 export function parseArgv(argv: string[]): ParsedArgv {
@@ -23,6 +27,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
   let timeoutMs: number | undefined;
   let viewport = false;
   let full = false;
+  let zone: string | undefined;
+  let at: string | undefined;
+  let split: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--target' || a === '--surface') { target = argv[++i]; continue; }
@@ -33,7 +40,10 @@ export function parseArgv(argv: string[]): ParsedArgv {
     }
     if (a === '--viewport') { viewport = true; continue; }
     if (a === '--full' || a === '--fullpage') { full = true; continue; }
+    if (a === '--zone') { zone = argv[++i]; continue; }
+    if (a === '--at') { at = argv[++i]; continue; }
+    if (a === '--split') { split = argv[++i]; continue; }
     positional.push(a);
   }
-  return { positional, target, timeoutMs, viewport, full };
+  return { positional, target, timeoutMs, viewport, full, zone, at, split };
 }

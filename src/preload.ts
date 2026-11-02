@@ -1,6 +1,10 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import type { ElectronAPI, SftpTransferProgress } from './shared/types';
 import type { AgentEvent } from './shared/agent-types';
+import {
+  BROWSER_GUEST_SHORTCUT_CHANNEL,
+  isBrowserShortcutAction,
+} from './shared/browser-shortcuts';
 
 const api: ElectronAPI = {
   // SSH session
@@ -245,6 +249,17 @@ const api: ElectronAPI = {
     return () => ipcRenderer.removeListener('focus-mode:toggle', handler);
   },
 
+  // Reload / DevTools / focus-address chords main took from a browser-pane guest
+  // before the page saw them (its keys never reach this window). Each GridBrowser
+  // keeps the ones addressed to its own guest webContents id.
+  onBrowserGuestShortcut: (callback) => {
+    const handler = (_e: Electron.IpcRendererEvent, webContentsId: number, action: unknown) => {
+      if (typeof webContentsId === 'number' && isBrowserShortcutAction(action)) callback(webContentsId, action);
+    };
+    ipcRenderer.on(BROWSER_GUEST_SHORTCUT_CHANNEL, handler);
+    return () => ipcRenderer.removeListener(BROWSER_GUEST_SHORTCUT_CHANNEL, handler);
+  },
+
   getWorkspaceSetContext: () => ipcRenderer.invoke('workspace-set:get-context'),
   openWorkspaceSetWindow: (setId) => ipcRenderer.invoke('workspace-set:open-window', setId),
   listEnvironments: () => ipcRenderer.invoke('environment:list'),
@@ -351,6 +366,12 @@ const api: ElectronAPI = {
     const handler = (_e: Electron.IpcRendererEvent, sessionId: string) => callback(sessionId);
     ipcRenderer.on('terminal:web-input', handler);
     return () => ipcRenderer.removeListener('terminal:web-input', handler);
+  },
+  showAgentNotification: (req) => ipcRenderer.invoke('agent-notification:show', req),
+  onAgentNotificationActivate: (callback) => {
+    const handler = (_e: Electron.IpcRendererEvent, target: { workspaceId: string; sessionId: string }) => callback(target);
+    ipcRenderer.on('agent-notification:activate', handler);
+    return () => ipcRenderer.removeListener('agent-notification:activate', handler);
   },
   onClaudeActivity: (callback) => {
     const handler = (_e: Electron.IpcRendererEvent, payload: { terminalId: string; state: 'working' | 'idle' | 'waiting' }) => callback(payload);

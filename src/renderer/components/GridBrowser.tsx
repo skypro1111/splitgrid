@@ -1,5 +1,10 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { PaneFocusButton } from './focusMode';
+import { normalizeBrowserInput } from '../../shared/browser-url';
+import {
+  matchBrowserShortcut,
+  type BrowserShortcutAction,
+} from '../../shared/browser-shortcuts';
 import { SplitHorizontalIcon, SplitVerticalIcon } from './Icons';
 import {
   registerBrowser,
@@ -47,6 +52,25 @@ function runPageScript(wv: Electron.WebviewTag, js: string): Promise<unknown> {
 const CONSOLE_BUFFER_MAX = 200;
 // Chromium console-message levels (verified live: console.log→1, CSP warning→2).
 const CONSOLE_LEVEL: Record<number, string> = { 0: 'debug', 1: 'log', 2: 'warning', 3: 'error' };
+// net::ERR_ABORTED — a navigation replaced by another one, a download, or stop().
+// Not a failure worth showing.
+const NET_ERR_ABORTED = -3;
+
+// The blank start page reads as an empty address bar, as in a new Chrome tab.
+const displayUrl = (u: string) => (u === 'about:blank' ? '' : u);
+
+interface LoadError {
+  url: string;
+  code: number;
+  description: string;
+}
+
+// Code-brackets glyph for the DevTools button.
+const DevToolsIcon: React.FC<{ size?: number }> = ({ size = 14 }) => (
+  <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
+    <path d="M5.5 4.5 2 8l3.5 3.5M10.5 4.5 14 8l-3.5 3.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
 
 interface GridBrowserProps {
   url: string;
@@ -79,12 +103,34 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
   const lastRequestedUrlRef = useRef('');
   const zoomLevelRef = useRef(zoomLevel);
   zoomLevelRef.current = zoomLevel;
-  const [addressBar, setAddressBar] = useState(url);
+  const addressInputRef = useRef<HTMLInputElement | null>(null);
+  // The user has typed into the address bar since it last showed the page URL —
+  // a navigation (redirect, SPA route change) must not clobber the edit while
+  // the bar still has focus.
+  const addressDirtyRef = useRef(false);
+  // First mouse click into the unfocused bar selects the whole URL (Chrome).
+  const selectOnMouseUpRef = useRef(false);
+  // URL of the main-frame load that failed and is now showing the blank error
+  // page. Reload retries THIS — the guest's own reload() may reload the entry
+  // before it (the initial about:blank) when the failure never committed.
+  const failedUrlRef = useRef<string | null>(null);
+  // Set when the current main-frame navigation has committed (did-navigate);
+  // a did-fail-load after that is a post-commit hiccup of a page that rendered,
+  // not a failed load.
+  const committedSinceStartRef = useRef(true);
+  // The guest boots on about:blank and then loads the pane's URL; that first
+  // entry is dropped from history once the real page commits, so Back doesn't
+  // land on a blank page (and persist about:blank as the pane's URL).
+  const clearHistoryOnCommitRef = useRef(false);
+  const [addressBar, setAddressBar] = useState(displayUrl(url));
   const [currentTitle, setCurrentTitle] = useState('Browser');
   const [isLoading, setIsLoading] = useState(false);
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
+  const [devToolsOpen, setDevToolsOpen] = useState(false);
+  const [loadError, setLoadError] = useState<LoadError | null>(null);
   const uiFontSize = Math.max(10, Math.round(zoomLevel * 0.85));
+  const isMac = window.electronAPI.platform === 'darwin';
 
   // Stable refs for callbacks to avoid effect re-runs on every render.
   const onUrlChangeRef = useRef(onUrlChange);
@@ -117,15 +163,30 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
     }
   }, []);
 
+  // Show a URL in the address bar unless the user is mid-edit there.
+  const showUrl = useCallback((nextUrl: string) => {
+    const input = addressInputRef.current;
+    if (addressDirtyRef.current && input && document.activeElement === input) return;
+    addressDirtyRef.current = false;
+    setAddressBar(displayUrl(nextUrl));
+  }, []);
+
   const commitMainUrl = useCallback(
     (nextUrl: string) => {
-      if (!nextUrl || nextUrl === lastCommittedUrlRef.current) return;
+      if (!nextUrl) return;
+      // Always refresh the bar: after a failed load it shows the failed URL while
+      // lastCommittedUrlRef still holds the page before it, so going Back to that
+      // page must put its URL back even though the committed URL "didn't change".
+      // The about:blank boot page doesn't blank the bar while the pane's own URL
+      // is still waiting to load.
+      if (!(nextUrl === 'about:blank' && pendingUrlRef.current)) showUrl(nextUrl);
+      if (nextUrl === lastCommittedUrlRef.current) return;
       lastCommittedUrlRef.current = nextUrl;
       lastRequestedUrlRef.current = nextUrl;
-      setAddressBar(nextUrl);
-      onUrlChangeRef.current(nextUrl);
+      // The blank boot page is never the pane's URL worth restoring.
+      if (nextUrl !== 'about:blank') onUrlChangeRef.current(nextUrl);
     },
-    [] // stable — uses ref for onUrlChange
+    [showUrl] // stable — uses ref for onUrlChange
   );
 
   const requestNavigation = useCallback((wv: Electron.WebviewTag, targetUrl: string) => {
@@ -163,31 +224,123 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
     requestNavigation(wv, targetUrl);
   }, [requestNavigation]);
 
+  // Toolbar / shortcut / context-menu / agent actions. All stable (refs only) so
+  // the mount-once effect and the IPC listeners can hold them. Each guards on a
+  // live, dom-ready guest — the webview's methods throw before it attaches.
+  const reloadPage = useCallback((ignoreCache = false) => {
+    const wv = webviewRef.current;
+    if (!wv || !isDomReadyRef.current) return;
+    const failed = failedUrlRef.current;
+    try {
+      if (failed) {
+        // Retry what failed (dev server not up yet, …), not the error page.
+        wv.loadURL(failed).catch(() => { /* failure surfaces as did-fail-load */ });
+      } else if (ignoreCache) {
+        wv.reloadIgnoringCache();
+      } else {
+        wv.reload();
+      }
+    } catch { /* guest detached */ }
+  }, []);
+
+  const stopLoading = useCallback(() => {
+    try { webviewRef.current?.stop(); } catch { /* guest detached */ }
+  }, []);
+
+  const goBack = useCallback(() => {
+    const wv = webviewRef.current;
+    if (!wv || !isDomReadyRef.current) return;
+    try { if (wv.canGoBack()) wv.goBack(); } catch { /* guest detached */ }
+  }, []);
+
+  const goForward = useCallback(() => {
+    const wv = webviewRef.current;
+    if (!wv || !isDomReadyRef.current) return;
+    try { if (wv.canGoForward()) wv.goForward(); } catch { /* guest detached */ }
+  }, []);
+
+  // DevTools for the guest page only. A webview's DevTools can't dock inside the
+  // pane, so Electron opens them in their own window.
+  const toggleDevTools = useCallback(() => {
+    const wv = webviewRef.current;
+    if (!wv || !isDomReadyRef.current) return;
+    try {
+      if (wv.isDevToolsOpened()) wv.closeDevTools();
+      else wv.openDevTools();
+    } catch { /* guest detached */ }
+  }, []);
+
+  const focusAddressBar = useCallback(() => {
+    const input = addressInputRef.current;
+    if (!input) return;
+    onRequestFocusRef.current?.(containerId);
+    input.focus();
+    input.select();
+  }, [containerId]);
+
+  const runShortcut = useCallback((action: BrowserShortcutAction) => {
+    switch (action) {
+      case 'reload': reloadPage(false); break;
+      case 'hard-reload': reloadPage(true); break;
+      case 'back': goBack(); break;
+      case 'forward': goForward(); break;
+      case 'focus-address': focusAddressBar(); break;
+      case 'devtools': toggleDevTools(); break;
+    }
+  }, [reloadPage, goBack, goForward, focusAddressBar, toggleDevTools]);
+
   // Attach webview event listeners once on mount — never re-run.
   useEffect(() => {
     const wv = webviewRef.current;
     if (!wv) return;
 
+    const syncNavState = () => {
+      try {
+        setCanGoBack(wv.canGoBack());
+        setCanGoForward(wv.canGoForward());
+      } catch { /* guest detached */ }
+    };
     const onStartLoad = () => setIsLoading(true);
     const onStopLoad = () => {
       setIsLoading(false);
-      setCanGoBack(wv.canGoBack());
-      setCanGoForward(wv.canGoForward());
+      syncNavState();
     };
     const onTitleUpdate = (e: Electron.PageTitleUpdatedEvent) => {
       setCurrentTitle(e.title || 'Browser');
     };
+    const onStartNavigation = (e: Electron.DidStartNavigationEvent) => {
+      if (!e.isMainFrame || e.isInPlace) return;
+      committedSinceStartRef.current = false;
+      setLoadError(null);
+    };
     const onNavigation = (e: Electron.DidNavigateEvent) => {
+      committedSinceStartRef.current = true;
+      failedUrlRef.current = null;
+      setLoadError(null);
+      if (clearHistoryOnCommitRef.current && e.url && e.url !== 'about:blank') {
+        clearHistoryOnCommitRef.current = false;
+        try { wv.clearHistory(); } catch { /* guest detached */ }
+      }
       commitMainUrl(e.url);
-      setCanGoBack(wv.canGoBack());
-      setCanGoForward(wv.canGoForward());
+      syncNavState();
     };
     const onNavigationInPage = (e: Electron.DidNavigateInPageEvent & { isMainFrame?: boolean }) => {
       if (e.isMainFrame === false) return;
       commitMainUrl(e.url);
-      setCanGoBack(wv.canGoBack());
-      setCanGoForward(wv.canGoForward());
+      syncNavState();
     };
+    // A main-frame load failed: Electron shows a blank page, so surface the error
+    // (overlay below) and remember the URL so Reload retries it.
+    const onFailLoad = (e: Electron.DidFailLoadEvent) => {
+      if (!e.isMainFrame || e.errorCode === NET_ERR_ABORTED || committedSinceStartRef.current) return;
+      const failedUrl = e.validatedURL || '';
+      failedUrlRef.current = failedUrl || null;
+      setLoadError({ url: failedUrl, code: e.errorCode, description: e.errorDescription || '' });
+      if (failedUrl) showUrl(failedUrl);
+      syncNavState();
+    };
+    const onDevToolsOpened = () => setDevToolsOpen(true);
+    const onDevToolsClosed = () => setDevToolsOpen(false);
     let initialNavDone = false;
     const onDomReady = () => {
       isDomReadyRef.current = true;
@@ -200,14 +353,44 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
       const target = pendingUrlRef.current ?? initialSrcRef.current?.trim();
       pendingUrlRef.current = null;
       if (target && target !== 'about:blank') {
+        clearHistoryOnCommitRef.current = true;
         requestNavigation(wv, target);
       }
     };
 
-    // The focus-bridge preload posts this when the guest page is clicked/focused
-    // (guest input never reaches the host window). Focus the owning pane.
+    // Messages from the guest preload (resources/webview-focus.js) — guest input
+    // never reaches the host window. Page-controlled data: validate everything.
     const onIpcMessage = (e: Electron.IpcMessageEvent) => {
-      if (e.channel === 'splitgrid:guest-focus') onRequestFocusRef.current?.(containerId);
+      // Guest clicked/focused: focus the owning pane.
+      if (e.channel === 'splitgrid:guest-focus') {
+        onRequestFocusRef.current?.(containerId);
+        return;
+      }
+      // A chord the page didn't preventDefault. Only back/forward act here; the
+      // reserved ones (reload, DevTools, ⌘L) main already took before the page.
+      if (e.channel === 'splitgrid:guest-key') {
+        const p = e.args?.[0] as Record<string, unknown> | undefined;
+        if (!p || typeof p !== 'object' || typeof p.key !== 'string') return;
+        const action = matchBrowserShortcut(
+          {
+            key: p.key,
+            code: typeof p.code === 'string' ? p.code : undefined,
+            meta: p.meta === true,
+            control: p.control === true,
+            alt: p.alt === true,
+            shift: p.shift === true,
+          },
+          { platform: window.electronAPI.platform, editable: p.editable === true },
+        );
+        if (action === 'back') goBack();
+        else if (action === 'forward') goForward();
+        return;
+      }
+      // Mouse back/forward side buttons.
+      if (e.channel === 'splitgrid:guest-nav') {
+        if (e.args?.[0] === 'back') goBack();
+        else if (e.args?.[0] === 'forward') goForward();
+      }
     };
 
     // Buffer page console output for the agent `get console` command.
@@ -220,12 +403,16 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
     wv.addEventListener('did-start-loading', onStartLoad);
     wv.addEventListener('did-stop-loading', onStopLoad);
     wv.addEventListener('page-title-updated', onTitleUpdate);
+    wv.addEventListener('did-start-navigation', onStartNavigation);
     wv.addEventListener('did-navigate', onNavigation);
     wv.addEventListener('did-navigate-in-page', onNavigationInPage);
+    wv.addEventListener('did-fail-load', onFailLoad);
     wv.addEventListener('dom-ready', onDomReady);
     wv.addEventListener('console-message', onConsoleMessage);
     wv.addEventListener('ipc-message', onIpcMessage);
-    pendingUrlRef.current = initialSrcRef.current?.trim() || null;
+    wv.addEventListener('devtools-opened', onDevToolsOpened);
+    wv.addEventListener('devtools-closed', onDevToolsClosed);
+    pendingUrlRef.current = normalizeBrowserInput(initialSrcRef.current ?? '') || null;
 
     // Expose an imperative API so the agent browser bridge can drive this pane.
     // All calls run against the live <webview>; `eval` is page-scoped JS via
@@ -241,7 +428,8 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
       navigate: (target: string) => explicitNavigate(wv, target),
       back: () => { if (wv.canGoBack()) wv.goBack(); },
       forward: () => { if (wv.canGoForward()) wv.goForward(); },
-      reload: () => wv.reload(),
+      // Same as the toolbar: after a failed load, retry its URL.
+      reload: () => reloadPage(false),
       getWebContentsId: () => { try { return wv.getWebContentsId(); } catch { return -1; } },
       // Run the agent's JS via page `eval()` of a JSON-escaped string so BOTH a
       // single expression and multi-statement code work (eval yields the
@@ -307,15 +495,37 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
       wv.removeEventListener('did-start-loading', onStartLoad);
       wv.removeEventListener('did-stop-loading', onStopLoad);
       wv.removeEventListener('page-title-updated', onTitleUpdate);
+      wv.removeEventListener('did-start-navigation', onStartNavigation);
       wv.removeEventListener('did-navigate', onNavigation);
       wv.removeEventListener('did-navigate-in-page', onNavigationInPage);
+      wv.removeEventListener('did-fail-load', onFailLoad);
       wv.removeEventListener('dom-ready', onDomReady);
       wv.removeEventListener('console-message', onConsoleMessage);
       wv.removeEventListener('ipc-message', onIpcMessage);
+      wv.removeEventListener('devtools-opened', onDevToolsOpened);
+      wv.removeEventListener('devtools-closed', onDevToolsClosed);
       unregisterBrowser(containerId);
       isDomReadyRef.current = false;
     };
-  }, [applyWebviewZoom, containerId, requestNavigation, explicitNavigate]); // stable callbacks via refs
+  }, [applyWebviewZoom, commitMainUrl, containerId, requestNavigation, explicitNavigate, reloadPage, goBack, goForward, showUrl]); // stable callbacks via refs
+
+  // Reserved chords main took from the guest before the page saw them (reload,
+  // hard reload, DevTools, focus address bar), addressed by guest webContents id.
+  useEffect(() => {
+    return window.electronAPI.onBrowserGuestShortcut?.((webContentsId, action) => {
+      const wv = webviewRef.current;
+      if (!wv || !isDomReadyRef.current) return;
+      // -1: a chord main took from the host window (Cmd/Ctrl+R), meant for the
+      // pane whose address bar has focus.
+      if (webContentsId === -1) {
+        if (document.activeElement === addressInputRef.current) runShortcut(action);
+        return;
+      }
+      let ownId = -1;
+      try { ownId = wv.getWebContentsId(); } catch { /* not attached */ }
+      if (ownId === webContentsId) runShortcut(action);
+    });
+  }, [runShortcut]);
 
   // Do not mirror prop `url` back into webview after mount.
   // `onUrlChange` already reports navigation upstream; mirroring it back causes
@@ -331,18 +541,12 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
     const wv = webviewRef.current;
     if (!wv) return;
 
-    let finalUrl = input.trim();
+    // Paths and scheme-less dev servers load directly; see shared/browser-url.
+    const finalUrl = normalizeBrowserInput(input);
     if (!finalUrl) return;
 
-    // If it looks like a URL, add protocol
-    if (/^[\w-]+\.\w{2,}/.test(finalUrl) && !finalUrl.includes(' ')) {
-      finalUrl = 'https://' + finalUrl;
-    } else if (!/^https?:\/\//i.test(finalUrl)) {
-      // Treat as search query
-      finalUrl = `https://www.google.com/search?q=${encodeURIComponent(finalUrl)}`;
-    }
-
-    setAddressBar(finalUrl);
+    addressDirtyRef.current = false;
+    setAddressBar(displayUrl(finalUrl));
     if (isDomReadyRef.current) {
       explicitNavigate(wv, finalUrl);
     } else {
@@ -352,24 +556,50 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
-      // IME: the Enter that commits a composition candidate isn't a submit.
-      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+      // IME: the Enter/Esc that commits/cancels a composition isn't ours.
+      if (e.nativeEvent.isComposing) return;
+      if (e.key === 'Enter') {
         e.preventDefault();
         navigate(addressBar);
+        // Hand the keyboard to the page, as Chrome does after Enter.
+        webviewRef.current?.focus();
+      } else if (e.key === 'Escape') {
+        // Revert an edit to the page's URL and keep the bar selected.
+        e.preventDefault();
+        addressDirtyRef.current = false;
+        setAddressBar(displayUrl(failedUrlRef.current ?? lastCommittedUrlRef.current));
+        const input = e.currentTarget;
+        requestAnimationFrame(() => input.select());
       }
     },
     [addressBar, navigate]
   );
 
-  const goBack = useCallback(() => webviewRef.current?.goBack(), []);
-  const goForward = useCallback(() => webviewRef.current?.goForward(), []);
-  const reload = useCallback(() => {
-    if (isLoading) {
-      webviewRef.current?.stop();
-    } else {
-      webviewRef.current?.reload();
-    }
-  }, [isLoading]);
+  // Pane-chrome side of the browser shortcuts (address bar / buttons focused).
+  // Keys typed in the page never get here — main and the guest preload cover
+  // those. ⌘R / Ctrl+R can't arrive either: the app window's before-input-event
+  // swallows it (F5 works).
+  const handlePaneKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.nativeEvent.isComposing) return;
+      const t = e.target as HTMLElement;
+      const editable = t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable;
+      const action = matchBrowserShortcut(
+        { key: e.key, code: e.code, meta: e.metaKey, control: e.ctrlKey, alt: e.altKey, shift: e.shiftKey },
+        { platform: window.electronAPI.platform, editable },
+      );
+      if (!action) return;
+      e.preventDefault();
+      e.stopPropagation();
+      runShortcut(action);
+    },
+    [runShortcut]
+  );
+
+  const reloadOrStop = useCallback(() => {
+    if (isLoading) stopLoading();
+    else reloadPage(false);
+  }, [isLoading, stopLoading, reloadPage]);
 
   const navBtnStyle: React.CSSProperties = {
     display: 'flex',
@@ -395,6 +625,7 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
 
   return (
     <div
+      onKeyDown={handlePaneKeyDown}
       style={{
         display: 'flex',
         flexDirection: 'column',
@@ -492,7 +723,7 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
           style={canGoBack ? navBtnStyle : disabledStyle}
           onMouseEnter={(e) => { if (canGoBack) e.currentTarget.style.background = 'var(--bg-hover)'; }}
           onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-          title="Back"
+          title={isMac ? 'Back (\u2318[)' : 'Back (Alt+\u2190)'}
         >
           &#8592;
         </button>
@@ -502,23 +733,25 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
           style={canGoForward ? navBtnStyle : disabledStyle}
           onMouseEnter={(e) => { if (canGoForward) e.currentTarget.style.background = 'var(--bg-hover)'; }}
           onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-          title="Forward"
+          title={isMac ? 'Forward (\u2318])' : 'Forward (Alt+\u2192)'}
         >
           &#8594;
         </button>
         <button
-          onClick={reload}
+          onClick={reloadOrStop}
           style={navBtnStyle}
           onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-hover)'; }}
           onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-          title={isLoading ? 'Stop' : 'Reload'}
+          title={isLoading ? 'Stop' : isMac ? 'Reload (\u2318R)' : 'Reload (Ctrl+R)'}
         >
           {isLoading ? '\u00D7' : '\u21BB'}
         </button>
         <input
+          ref={addressInputRef}
           type="text"
           value={addressBar}
-          onChange={(e) => setAddressBar(e.target.value)}
+          placeholder="Search or enter address"
+          onChange={(e) => { addressDirtyRef.current = true; setAddressBar(e.target.value); }}
           onKeyDown={handleKeyDown}
           spellCheck={false}
           style={{
@@ -533,13 +766,87 @@ export const GridBrowser: React.FC<GridBrowserProps> = ({
             outline: 'none',
             fontFamily: 'inherit',
           }}
-          onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; }}
+          // Chrome-style: focusing the bar selects the whole URL. A first click
+          // would drop the caret and undo that on mouseup, so re-select there —
+          // unless the click was a drag that selected something itself.
+          onMouseDown={(e) => { selectOnMouseUpRef.current = document.activeElement !== e.currentTarget; }}
+          onMouseUp={(e) => {
+            const input = e.currentTarget;
+            if (selectOnMouseUpRef.current && input.selectionStart === input.selectionEnd) {
+              e.preventDefault();
+              input.select();
+            }
+            selectOnMouseUpRef.current = false;
+          }}
+          onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.select(); }}
           onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; }}
         />
+        <button
+          onClick={toggleDevTools}
+          style={{ ...navBtnStyle, color: devToolsOpen ? 'var(--accent)' : 'var(--text-muted)' }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-hover)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+          title={`${devToolsOpen ? 'Close' : 'Open'} DevTools (${isMac ? 'F12 / \u2318\u2325I' : 'F12 / Ctrl+Shift+I'})`}
+        >
+          <DevToolsIcon />
+        </button>
       </div>
 
       {/* Webview */}
       <div style={{ flex: 1, position: 'relative' }}>
+        {/* Loading sweep along the top edge. Absolutely positioned (no layout
+            shift → no webview resize) and promoted to its own layer so it paints
+            above the GPU-composited <webview>. */}
+        {isLoading && (
+          <div
+            aria-hidden="true"
+            style={{
+              position: 'absolute', top: 0, left: 0, right: 0, height: '2px', overflow: 'hidden',
+              zIndex: 3, pointerEvents: 'none', transform: 'translateZ(0)', color: 'var(--accent)',
+            }}
+          >
+            <div
+              style={{
+                position: 'absolute', top: 0, bottom: 0, left: 0, width: '33%',
+                background: 'currentColor', animation: 'agentActivitySweep 1.15s ease-in-out infinite',
+              }}
+            />
+          </div>
+        )}
+        {/* A failed main-frame load leaves Electron's blank error page; say what
+            happened and offer the retry. Clicking hands focus back to the guest
+            so ⌘R / F5 keep working from there. */}
+        {loadError && (
+          <div
+            onMouseDown={() => webviewRef.current?.focus()}
+            style={{
+              position: 'absolute', inset: 0, zIndex: 2, transform: 'translateZ(0)',
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+              gap: '8px', padding: '24px', textAlign: 'center',
+              background: 'var(--bg-primary)', color: 'var(--text-muted)',
+            }}
+          >
+            <div style={{ fontSize: '1.15em', fontWeight: 600, color: 'var(--text-primary)' }}>
+              This page couldn&apos;t be loaded
+            </div>
+            {loadError.url && (
+              <div style={{ maxWidth: '100%', overflowWrap: 'anywhere' }}>{loadError.url}</div>
+            )}
+            <div style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: '0.9em' }}>
+              {loadError.description || `Error ${loadError.code}`}
+            </div>
+            <button
+              onClick={() => reloadPage(false)}
+              style={{
+                marginTop: '6px', padding: '4px 14px', borderRadius: '6px', cursor: 'pointer',
+                border: '1px solid var(--border)', background: 'var(--bg-surface)',
+                color: 'var(--text-primary)', fontSize: '1em', fontFamily: 'inherit',
+              }}
+            >
+              Reload
+            </button>
+          </div>
+        )}
         <webview
           ref={webviewRef as any}
           partition={partition}

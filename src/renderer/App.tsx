@@ -6,7 +6,7 @@ import { useClaudeActivity } from './hooks/useClaudeActivity';
 import { useAgentNotify } from './hooks/useAgentNotify';
 import { useWorkspaceActivity } from './hooks/useWorkspaceActivity';
 import { useAppSettings } from './hooks/useAppSettings';
-import { useNotificationSound } from './hooks/useNotificationSound';
+import { useAgentAttention } from './hooks/useAgentAttention';
 import { SOUNDS, SILENT_SOUND_ID, playSound } from './sounds';
 import { WorkspaceBar } from './components/WorkspaceBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
@@ -71,17 +71,20 @@ const App: React.FC = () => {
     terminals.getLastOutputAt,
   );
   const appSettings = useAppSettings();
-  // Play a "Done" sound when a terminal finishes in the background (inactive
-  // workspace or unfocused window). Sound/volume resolve per-workspace → global.
-  const playDoneSound = useNotificationSound({
+  // When an agent finishes or starts waiting in the background (inactive
+  // workspace or unfocused window): a sound (per-workspace → global) and, while
+  // the window is unfocused, a system notification that opens the workspace.
+  const agentAttention = useAgentAttention({
     getSettings: () => appSettings.settings,
-    getWorkspace: (id) => workspace.workspaces.find((w) => w.id === id),
+    getWorkspaces: () => workspace.workspaces,
+    focusContainerInWorkspace: workspace.focusContainerInWorkspace,
+    switchWorkspace: workspace.switchWorkspace,
   });
   // Let agents in terminals drive their own browser panes (open/navigate/get/
   // screenshot/console/eval) via the bundled splitgrid-browser helper.
   useBrowserAgentBridge({
     workspaces: workspace.workspaces,
-    createBrowserContainer: workspace.createBrowserContainer,
+    openInZone: workspace.openInAgentZone,
     updateContainerContent: workspace.updateContainerContent,
     // The caller's workspace may be a background one — not the active workspace.
     removeContainer: workspace.removeContainerAnywhere,
@@ -91,7 +94,7 @@ const App: React.FC = () => {
   // via the bundled splitgrid-terminal helper.
   useTerminalAgentBridge({
     workspaces: workspace.workspaces,
-    createContainer: workspace.createBrowserContainer, // content-agnostic creator
+    openInZone: workspace.openInAgentZone,
     removeContainer: workspace.removeContainerAnywhere,
     createLocalTerminal: terminals.createLocalTerminal,
     connectSaved: terminals.connectSaved,
@@ -103,7 +106,7 @@ const App: React.FC = () => {
   // splitgrid-sql helper. Drives the live SqlWorkbench (results surface in the UI).
   useSqlAgentBridge({
     workspaces: workspace.workspaces,
-    createContainer: workspace.createBrowserContainer, // content-agnostic creator
+    openInZone: workspace.openInAgentZone,
   });
   // Agent SFTP access: an agent in a splitgrid terminal can move files between
   // this machine and its workspace's remote hosts (sync targets + the hosts of
@@ -1427,7 +1430,8 @@ const App: React.FC = () => {
           claudeActivity={claudeActivity}
           sessionActivity={outputActivity.sessions}
           agentNotify={agentNotify}
-          onUnviewedDone={playDoneSound}
+          onUnviewedDone={agentAttention.onDone}
+          onAgentWaiting={agentAttention.onWaiting}
           muteAll={appSettings.settings.muteAll}
           onToggleWorkspaceMute={(id, muted) => workspace.setWorkspaceNotify(id, { notifyMuted: muted })}
           onToggleMuteAll={(muted) => appSettings.update({ muteAll: muted })}

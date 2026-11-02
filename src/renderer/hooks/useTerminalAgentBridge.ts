@@ -3,6 +3,8 @@ import type {
   Workspace, Container, ContainerContent, TerminalSessionInfo,
   LocalShellConfig, SavedConnection,
 } from '../../shared/types';
+import type { ZoneSplit } from '../../shared/agent-zones';
+import { inZone, resolveZoneRequest, takeZoneFlags, zoneOwner, zonePanes } from './agentZone';
 
 // ─── Agent terminal bridge (renderer side) ───────────────────────────────────
 // Receives an agent's terminal command (forwarded from main, keyed by reqId),
@@ -12,13 +14,18 @@ import type {
 // surface (sendData / getSessionBuffer / getTerminalProcessTree via electronAPI),
 // so the main-side bridge is a pure relay. Scope rule: an agent may only see and
 // drive terminals in its own workspace; any other target id is rejected.
+// Panes it opens go into its zone (shared/agent-zones), and it may only close
+// the panes in that zone.
 
 interface BridgeDeps {
   workspaces: Workspace[];
-  // Create a filled container (any content) in a specific workspace, splitting
-  // its focused/first pane. The workspace function is historically named
-  // `createBrowserContainer` but is content-agnostic — we use it for terminals too.
-  createContainer: (workspaceId: string, content: ContainerContent) => string;
+  // Create a filled container in the calling agent's zone of a workspace.
+  openInZone: (
+    workspaceId: string,
+    zone: { terminal: string; name: string; label: string },
+    content: ContainerContent,
+    opts?: { at?: string; split?: ZoneSplit; background?: boolean },
+  ) => string;
   // Remove a container from whichever workspace holds it (closes the pane).
   removeContainer: (containerId: string) => void;
   // Spawn a local PTY / connect a saved SSH session (async; returns its info).
@@ -44,11 +51,19 @@ const HELP = {
     'key  <id> <name>             — send a key: enter|tab|esc|up|down|left|right|',
     '                               home|end|pageup|pagedown|backspace|delete|space|',
     '                               ctrl-c|ctrl-d|ctrl-z|ctrl-l|ctrl-<letter>',
-    'open [label]                 — open a new LOCAL terminal in this workspace',
-    'open ssh <connection>        — open an SSH terminal from a saved connection',
+    'open [label]                 — open a new LOCAL terminal in your zone',
+    'open ssh <connection>        — open an SSH terminal from a saved connection, in your zone',
+    '     [--split right|down]    — where the new pane goes (default: alternates)',
+    '     [--at <id>]             — which of your zone\'s panes to split (default: the last one)',
+    '     [--background|--bg]     — a background process (dev server, watcher): goes in the',
+    '                               thin tray along your zone\'s bottom, side by side',
+    'zone                         — your zone\'s panes, in order',
     'connections                  — list saved SSH connections (name + host) for `open ssh`',
-    'close <id>                   — close a terminal in this workspace (kills it + its pane)',
+    'close <id>                   — close a terminal in your zone (kills it + its pane)',
+    '--zone <name>                — on open/close/list/zone: use your own zone when you are a',
+    '                               subagent (they share the parent\'s terminal); default: main',
   ],
+  zones: 'The first pane you open splits your own terminal and starts your zone; every later pane is placed inside it. Panes outside your zone can be read and typed into, but not closed.',
 };
 
 const DEFAULT_TAIL_LINES = 200;
@@ -129,7 +144,11 @@ function terminalsOf(ws: Workspace): Array<{ id: string; container: Container }>
 async function runCommand(deps: BridgeDeps, terminal: string, argv: string[]): Promise<Reply> {
   const { workspaces } = deps;
   const cmd = (argv[0] || '').toLowerCase();
-  const rawRest = argv.slice(1);
+  // Zone flags only on the commands that place or remove panes; `send`/`type`
+  // text is passed through untouched.
+  const { flags, rest: rawRest } = ['open', 'close', 'list', 'zone'].includes(cmd)
+    ? takeZoneFlags(argv.slice(1))
+    : { flags: {}, rest: argv.slice(1) };
 
   if (cmd === 'help' || cmd === '--help' || cmd === '-h' || cmd === '') {
     return { ok: true, data: { ...HELP } };
@@ -152,11 +171,18 @@ async function runCommand(deps: BridgeDeps, terminal: string, argv: string[]): P
   try { sessions = await window.electronAPI.getActiveSessions(); } catch { sessions = []; }
   const sessionById = new Map(sessions.map((s) => [s.id, s]));
 
+  const owner = zoneOwner(terminal, flags.zone);
+
+  if (cmd === 'zone') {
+    return { ok: true, data: { zone: owner.name, panes: zonePanes(callerWs, owner) } };
+  }
+
   if (cmd === 'list') {
     return {
       ok: true,
       data: {
         workspace: callerWs.name,
+        zone: owner.name,
         terminals: siblings.map((t) => {
           const s = sessionById.get(t.id);
           return {
@@ -166,6 +192,7 @@ async function runCommand(deps: BridgeDeps, terminal: string, argv: string[]): P
             status: s?.status ?? 'unknown',
             cwd: t.container.content.cwd || s?.cwd,
             mine: t.id === terminal,
+            inZone: inZone(callerWs, owner, t.id),
           };
         }),
       },
@@ -187,6 +214,11 @@ async function runCommand(deps: BridgeDeps, terminal: string, argv: string[]): P
   // `open [label]` — new LOCAL terminal in this workspace;
   // `open ssh <connection>` — SSH terminal from a saved connection.
   if (cmd === 'open') {
+    const zone = resolveZoneRequest(callerWs, terminal, flags);
+    if (!zone.ok) return zone;
+    const place = (content: ContainerContent): void => {
+      deps.openInZone(callerWs.id, zone.req.owner, content, { at: zone.req.at, split: zone.req.split, background: zone.req.background });
+    };
     if ((rawRest[0] || '').toLowerCase() === 'ssh') {
       const query = rawRest.slice(1).join(' ').trim();
       if (!query) {
@@ -203,11 +235,11 @@ async function runCommand(deps: BridgeDeps, terminal: string, argv: string[]): P
       }
       try {
         const info = await deps.connectSaved(match.id);
-        deps.createContainer(callerWs.id, {
+        place({
           type: 'terminal', terminalType: 'ssh', terminalId: info.id,
           connectionId: match.id, label: match.label,
         });
-        return { ok: true, data: { id: info.id, label: match.label, type: 'ssh', connection: match.label, opened: true } };
+        return { ok: true, data: { id: info.id, label: match.label, type: 'ssh', connection: match.label, opened: true, zone: owner.name, ...(zone.req.background ? { background: true } : {}) } };
       } catch (err) {
         return { ok: false, error: 'open_failed', data: { message: (err as Error).message, connection: match.label } };
       }
@@ -219,11 +251,11 @@ async function runCommand(deps: BridgeDeps, terminal: string, argv: string[]): P
     const cwd = callerWs.workingDirectory ?? undefined;
     try {
       const info = await deps.createLocalTerminal({ cwd, label });
-      deps.createContainer(callerWs.id, {
+      place({
         type: 'terminal', terminalType: 'local', terminalId: info.id,
         label: label ?? info.label, cwd: cwd ?? info.cwd, shell: info.shell,
       });
-      return { ok: true, data: { id: info.id, label: label ?? info.label, type: 'local', opened: true } };
+      return { ok: true, data: { id: info.id, label: label ?? info.label, type: 'local', opened: true, zone: owner.name, ...(zone.req.background ? { background: true } : {}) } };
     } catch (err) {
       return { ok: false, error: 'open_failed', data: { message: (err as Error).message } };
     }
@@ -292,6 +324,14 @@ async function runCommand(deps: BridgeDeps, terminal: string, argv: string[]): P
       return { ok: true, data: { id: targetId, key: name.toLowerCase() } };
     }
     case 'close': {
+      // Only the agent's own zone: the user's panes (and its own terminal) stay.
+      if (!inZone(callerWs, owner, targetId)) {
+        return {
+          ok: false,
+          error: 'not_in_zone',
+          data: { message: 'only panes in your zone can be closed; ask the user to close this one', id: targetId, zone: owner.name, panes: zonePanes(callerWs, owner) },
+        };
+      }
       // Kill the session, then remove its pane from the workspace.
       const container = siblings.find((t) => t.id === targetId)?.container;
       try { await deps.closeSession(targetId); } catch { /* may already be gone */ }

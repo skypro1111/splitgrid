@@ -316,11 +316,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     draft.defaultSoundId !== settings.defaultSoundId ||
     draft.defaultVolume !== settings.defaultVolume ||
     !!draft.muteAll !== !!settings.muteAll ||
+    (draft.systemNotifications !== false) !== (settings.systemNotifications !== false) ||
+    (draft.notifyOnWaiting !== false) !== (settings.notifyOnWaiting !== false) ||
     (draft.windowsDefaultShell ?? '') !== (settings.windowsDefaultShell ?? '') ||
     (draft.terminalRenderer ?? 'xterm') !== (settings.terminalRenderer ?? 'xterm') ||
     normalizeBackgroundColor(draft.backgroundColor) !== normalizeBackgroundColor(settings.backgroundColor) ||
     !!draft.agentIntegrations !== !!settings.agentIntegrations ||
     !!draft.agentTerminalControl !== !!settings.agentTerminalControl ||
+    !!draft.agentLongRunningInPanes !== !!settings.agentLongRunningInPanes ||
     !!draft.agentSqlControl !== !!settings.agentSqlControl ||
     !!draft.agentSftpControl !== !!settings.agentSftpControl ||
     !!draft.agentSftpWrite !== !!settings.agentSftpWrite ||
@@ -580,12 +583,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 />
               </Card>
 
-              <Card title="Notifications" desc="Play a sound when a terminal finishes (Done) in a background workspace or while the window is unfocused.">
+              <Card title="Notifications" desc="Play a sound when an agent finishes (Done) or stops to wait for you in a background workspace or while the window is unfocused.">
                 <Toggle
                   label="Mute all notifications"
                   checked={!!draft.muteAll}
                   onChange={(v) => set({ muteAll: v })}
                 />
+                <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <Toggle
+                    label="System notifications"
+                    desc="While SplitGrid is in the background, also show an OS notification. Clicking it opens that workspace and terminal. The OS may ask for permission the first time, and can turn them off in its notification settings."
+                    checked={draft.systemNotifications !== false}
+                    disabled={!!draft.muteAll}
+                    onChange={(v) => set({ systemNotifications: v })}
+                  />
+                  <Toggle
+                    label="Notify when an agent is waiting"
+                    desc="Also notify when an agent pauses for a permission decision or a question, not only when it is Done."
+                    checked={draft.notifyOnWaiting !== false}
+                    disabled={!!draft.muteAll}
+                    onChange={(v) => set({ notifyOnWaiting: v })}
+                  />
+                </div>
                 <div style={{ opacity: draft.muteAll ? 0.5 : 1, marginTop: 14 }}>
                   <Row label="Default sound">
                     <PSelect value={draft.defaultSoundId} onValue={(v) => set({ defaultSoundId: v })}>
@@ -678,6 +697,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       sibling shell runs arbitrary commands, so it's a separate opt-in — off by default.</>
                     }
                   />
+                  <div style={{ marginLeft: 22, marginTop: 14 }}>
+                    <Toggle
+                      label="Long-running processes in panes"
+                      checked={!!draft.agentLongRunningInPanes}
+                      disabled={!draft.agentIntegrations || !draft.agentTerminalControl}
+                      onChange={(v) => set({ agentLongRunningInPanes: v })}
+                      desc={
+                        <>Off (default): simple background jobs such as a dev server or a watcher stay
+                        background jobs of the agent, and a pane opens only when you ask to see one. On: agents
+                        start every dev server, watcher and log tail in a small tray pane at the bottom of their
+                        zone, where you can watch and stop it. SSH always opens in its own pane. Applies to
+                        agents started after the change.</>
+                      }
+                    />
+                  </div>
                 </div>
                 <div style={{ marginLeft: 22, marginTop: 14 }}>
                   <Toggle

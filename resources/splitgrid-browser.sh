@@ -55,6 +55,28 @@ if [ -z "$use_bridge" ] && [ -n "$WSL_DISTRO_NAME" ]; then
   fi
 fi
 
+# `open <file>`: the pane can't see this shell's cwd, so an existing local path
+# goes over absolute (the app turns it into file://). Inside WSL it must be a
+# Windows path (\\wsl.localhost\<distro>\...) for the Windows app to load it.
+case "$1" in
+  open|navigate|goto)
+    if [ -n "$2" ] && [ -e "$2" ]; then
+      case "$2" in
+        *://*) ;;
+        *)
+          dir=$(dirname -- "$2"); base=$(basename -- "$2")
+          abs="$(cd -- "$dir" 2>/dev/null && pwd -P)/$base"
+          if [ -n "$WSL_DISTRO_NAME" ] && command -v wslpath >/dev/null 2>&1; then
+            abs=$(wslpath -w "$abs" 2>/dev/null || printf '%s' "$abs")
+          fi
+          cmd="$1"; shift 2
+          set -- "$cmd" "$abs" "$@"
+          ;;
+      esac
+    fi
+    ;;
+esac
+
 # Build a JSON array from "$@": escape each arg into a valid JSON string. awk is
 # used (not sed) because BSD/GNU sed differ on multi-line handling at EOF.
 # Other control chars (ESC, BEL, …) become \u00XX so the JSON stays valid;

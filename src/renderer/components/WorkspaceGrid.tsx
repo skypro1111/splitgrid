@@ -1,11 +1,11 @@
-import React, { useRef, useCallback, useEffect, useMemo, useState, useLayoutEffect, useContext } from 'react';
+import React, { useRef, useCallback, useEffect, useMemo, useState, useLayoutEffect, useContext, createContext } from 'react';
 import { PlusSquareIcon } from './Icons';
-import type { LayoutNode, SplitNode, SplitDirection, Container, QuickChatHotkey } from '../../shared/types';
+import type { AgentZoneTag, LayoutNode, SplitNode, SplitDirection, Container, QuickChatHotkey } from '../../shared/types';
 import { TEMP_DISABLE_INPUT_INTERCEPTS } from '../../shared/runtime-flags';
 import { defaultFocusModeHotkey, hotkeyMatchesInput } from '../../shared/quick-chat-hotkey';
 import { isCapturingHotkey } from '../hotkeyCapture';
 import { FocusModeContext, publishFocusMode, type GridRect } from './focusMode';
-import { pruneLayoutTree } from '../../shared/layout-tree';
+import { leafIds, pruneLayoutTree } from '../../shared/layout-tree';
 
 const MIN_RATIO = 0.1;
 const HANDLE_SIZE = 6;
@@ -151,6 +151,53 @@ function LeafCell({
       {/* Pulsing purple glow frame — only while focused. Its own compositing
           layer keeps it above the GPU canvas; the pulse is opacity-only (cheap). */}
       {isFocused && <div className="focus-mode-glow" aria-hidden="true" />}
+    </div>
+  );
+}
+
+// --- Agent zone frame ---
+
+// Closing a zone closes every pane in it through the grid's normal onClose, so
+// terminals are killed the same way as from their own close button.
+const ZoneCloseContext = createContext<(containerId: string) => void>(() => {});
+
+const ZONE_HEADER = 18;
+
+// The region an agent's panes live in (shared/agent-zones): a thin labelled
+// frame around the subtree, so it's clear which panes an agent opened and they
+// can be cleared in one go.
+function ZoneFrame({ zone, node, children }: { zone: AgentZoneTag; node: LayoutNode; children: React.ReactNode }) {
+  const close = useContext(ZoneCloseContext);
+  const count = leafIds(node).length;
+  return (
+    <div
+      className="agent-zone"
+      data-zone={zone.name}
+      style={{
+        display: 'flex', flexDirection: 'column', width: '100%', height: '100%', boxSizing: 'border-box',
+        border: '1px solid var(--border)', borderRadius: '6px', overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', gap: '6px', padding: '0 6px',
+          height: `${ZONE_HEADER}px`, minHeight: `${ZONE_HEADER}px`, flexShrink: 0,
+          fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-titlebar)',
+          borderBottom: '1px solid var(--border)', userSelect: 'none',
+        }}
+      >
+        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          Agent zone · {zone.label} · {count} {count === 1 ? 'pane' : 'panes'}
+        </span>
+        <button
+          onClick={() => leafIds(node).forEach((id) => close(id))}
+          title="Close every pane in this zone"
+          style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '11px', lineHeight: 1, padding: '0 2px' }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text-primary)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; }}
+        >×</button>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>{children}</div>
     </div>
   );
 }
@@ -306,21 +353,18 @@ function TilingNode({
   renderContent: (container: Container, onSplitRight: () => void, onSplitDown: () => void, zoomLevel: number) => React.ReactNode;
   onDragStart: (containerId: string, e: MouseEvent) => void;
 }) {
-  if (node.type === 'leaf') {
-    return (
-      <LeafCell
-        key={node.containerId}
-        containerId={node.containerId}
-        containerMap={containerMap}
-        zoomLevel={zoomLevels.get(node.containerId) ?? 13}
-        onSplit={onSplit}
-        renderContent={renderContent}
-        onDragStart={onDragStart}
-      />
-    );
-  }
-
-  return (
+  const inner = node.type === 'leaf' ? (
+    <LeafCell
+      key={node.containerId}
+      containerId={node.containerId}
+      containerMap={containerMap}
+      zoomLevel={zoomLevels.get(node.containerId) ?? 13}
+      onSplit={onSplit}
+      renderContent={renderContent}
+      onDragStart={onDragStart}
+    />
+  ) : (
+    // The node goes down whole (zone tag included), so a resize keeps the tag.
     <SplitPane
       node={node}
       onNodeChange={onNodeChange}
@@ -331,6 +375,7 @@ function TilingNode({
       onDragStart={onDragStart}
     />
   );
+  return node.zone ? <ZoneFrame zone={node.zone} node={node}>{inner}</ZoneFrame> : inner;
 }
 
 // --- Main grid component ---
@@ -344,6 +389,7 @@ export const WorkspaceGrid: React.FC<WorkspaceGridProps> = ({
   onZoomChange,
   onFocusedContainerChange,
   onSplit,
+  onClose,
   onSwap,
   onAddFirst,
   renderContent,
@@ -933,6 +979,7 @@ export const WorkspaceGrid: React.FC<WorkspaceGridProps> = ({
   // --- Render tiling tree ---
   return (
     <FocusModeContext.Provider value={{ focusModeId, gridRect, toggle: toggleFocus }}>
+      <ZoneCloseContext.Provider value={onClose}>
       <div ref={gridRootRef} style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
         <TilingNode
           node={currentTree}
@@ -960,6 +1007,7 @@ export const WorkspaceGrid: React.FC<WorkspaceGridProps> = ({
           />
         )}
       </div>
+      </ZoneCloseContext.Provider>
     </FocusModeContext.Provider>
   );
 };

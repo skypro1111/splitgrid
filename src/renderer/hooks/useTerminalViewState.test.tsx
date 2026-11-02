@@ -74,4 +74,41 @@ describe('useTerminalViewState', () => {
     expect(onNewUnviewed).toHaveBeenCalledTimes(2);
     expect(result.current.unviewedWorkspaces.has('B')).toBe(true);
   });
+
+  it('fires Waiting once per wait, only while the terminal is not being viewed', () => {
+    const onNewWaiting = vi.fn();
+    let activity = new Map<string, ClaudeActivityState>([['sa', 'working'], ['sb', 'working']]);
+    let cmd: string | undefined = 'claude';
+    const { rerender } = renderHook(() => useTerminalViewState({
+      workspaces: WORKSPACES,
+      activeWorkspaceId: 'A',
+      claudeActivity: activity,
+      sessionActivity: undefined,
+      notifyAt: NO_NOTIFY,
+      getProcCommand: () => cmd,
+      onNewWaiting,
+    }));
+    const tick = () => {
+      act(() => rerender());
+      act(() => {
+        vi.advanceTimersByTime(1000);
+        window.dispatchEvent(new Event('focus'));
+      });
+    };
+
+    // A (on screen) and B (background) both stop at a permission prompt.
+    activity = new Map([['sa', 'waiting'], ['sb', 'waiting']]);
+    tick(); tick();
+    expect(onNewWaiting.mock.calls).toEqual([['sb', 'B']]);
+
+    // A blank process poll mid-wait is the same wait, not a new one.
+    cmd = undefined; tick();
+    cmd = 'claude'; tick();
+    expect(onNewWaiting).toHaveBeenCalledTimes(1);
+
+    // Approved, works, then asks again → a new wait.
+    activity = new Map([['sa', 'working'], ['sb', 'working']]); tick();
+    activity = new Map([['sa', 'working'], ['sb', 'waiting']]); tick();
+    expect(onNewWaiting).toHaveBeenCalledTimes(2);
+  });
 });

@@ -1,168 +1,129 @@
 ---
 name: sg-browser
-description: Control the embedded browser pane inside a SplitGrid terminal via $SPLITGRID_BROWSER_CLI — open a URL (localhost or remote), screenshot it, read console errors, inspect/extract the DOM, run JS, navigate, and click/fill/type/scroll through pages and forms. This is the ONLY way to drive a browser inside SplitGrid: ALWAYS use this skill for ANY browser or web-page work here, and never a generic browser-automation or Chrome MCP tool — those target a different browser, not the SplitGrid pane. Triggers on ANY of: build/change/debug a web UI and want to SEE the result instead of guessing; "open the browser", "check the page", "screenshot it", "verify in the browser", "test localhost", "click/fill/type on the page", "read the console", "extract/scrape the DOM", "automate the browser".
+description: Drives the browser pane embedded in SplitGrid through $SPLITGRID_BROWSER_CLI - open a URL, a localhost dev server or a local HTML file, screenshot it, read console errors and network requests, inspect or extract the DOM, run JS, and click, fill, type and scroll through pages and forms. Use it whenever a web UI or HTML file is built, changed or debugged from a SplitGrid terminal, to see the real result instead of guessing, and for any request to open, render, check, test, verify, screenshot, scrape or automate a page, visual checks inside a subagent task included, even when the user doesn't mention the pane. It replaces headless Chrome (--headless --screenshot), Playwright, puppeteer, Claude in Chrome and other browser tools here, which render where the user can't see. Requires a SplitGrid terminal ($SPLITGRID_BROWSER_CLI set).
 disallowed-tools: mcp__claude-in-chrome__*
 ---
 
 # SplitGrid browser control
 
-> **MANDATORY inside SplitGrid.** If `$SPLITGRID_BROWSER_CLI` is set, you are in a
-> SplitGrid terminal and this skill is the **required, first-choice** tool for any
-> browser/web-page work. Use it before anything else and do not fall back to
-> generic browser-automation or Chrome MCP tools — they drive a different browser.
-
-You are running inside a **SplitGrid** terminal, which has an embedded Chromium
-browser pane you can drive from the shell to verify your work — open a page,
-screenshot it, read the console, inspect the DOM, and interact with it.
-
-**Use THIS skill — not any other browser tool — for every browser interaction in
-this terminal.** Other browser-automation / Chrome MCP tools drive a *different*
-browser, not the SplitGrid pane, so they won't affect what you're verifying here.
-While this skill is active those tools are disabled; always reach for
-`$SPLITGRID_BROWSER_CLI`.
-
-The CLI is already on your environment as **`$SPLITGRID_BROWSER_CLI`**. Always invoke
-it through that variable:
+SplitGrid has an embedded Chromium pane that the shell can drive: open a page
+or a local HTML file, look at it, read its console, inspect the DOM and
+interact with it. Use this CLI for every browser action in a SplitGrid
+terminal, a subagent's visual check included. Headless Chrome, Playwright and
+other browser tools render where the user can't see, and Claude in Chrome is
+disabled while this skill is active.
 
 ```sh
 "$SPLITGRID_BROWSER_CLI" <command> [args...]
 ```
 
-If `$SPLITGRID_BROWSER_CLI` is empty, you are not inside a SplitGrid terminal and this
-skill does not apply.
+If `$SPLITGRID_BROWSER_CLI` is empty, this is not a SplitGrid terminal, and this
+skill does not apply. Each call prints one JSON line: `{"ok":true, ...}` or
+`{"ok":false,"error":"...","message":"..."}`. Check `ok` after every call.
 
-Every call prints a single line of **JSON** to stdout:
-`{"ok":true, ...}` on success, or `{"ok":false,"error":"...","message":"..."}` on
-failure. Parse it; don't assume success.
-
-## The verification loop (the common case)
-
-After you change a web app, confirm it actually works:
+## Verify a change
 
 ```sh
-# 1. Open the page (creates the browser pane if none exists, and you own it)
-"$SPLITGRID_BROWSER_CLI" open http://localhost:3000
-
-# 2. Wait for it to be ready, then look at it
+"$SPLITGRID_BROWSER_CLI" open http://localhost:3000   # focus the browser pane you own, or create one
 "$SPLITGRID_BROWSER_CLI" wait load
-"$SPLITGRID_BROWSER_CLI" screenshot          # -> {"ok":true,"screenshot":"/.../r12.png"}
-
-# 3. Read the screenshot file with your normal file-reading tool to SEE the page.
-# 4. Check for runtime errors and assert state:
-"$SPLITGRID_BROWSER_CLI" get console         # -> recent console messages incl. errors
+"$SPLITGRID_BROWSER_CLI" screenshot                   # -> {"ok":true,"screenshot":"/.../r12.png"}
+"$SPLITGRID_BROWSER_CLI" get console                  # recent console messages, errors included
 "$SPLITGRID_BROWSER_CLI" eval "document.querySelector('h1')?.textContent"
 ```
 
-`screenshot` returns a PNG **path** — open that file to view it. `get console`
-surfaces JS errors you'd otherwise miss. `eval` runs JS in the page and returns
-the result, so you can assert exact DOM/state.
+- `open` takes a URL, `localhost:5173` (gets `http://`), or a local file path,
+  relative or absolute (loads as `file://`). A static HTML file needs no server.
+- `screenshot` returns a PNG **path**. Read that file to see the page.
+- Always `wait` (`load`, `selector`, `text`, `url`) after `open` or an action,
+  before `screenshot`, `get` or `eval`. Otherwise the page may be half-rendered.
+- Prefer `eval` and `get console` for exact assertions. Use `screenshot` when
+  layout or visual state matters.
 
-## Targets: ref OR CSS selector
+## Targets
 
-Every action command takes a **target** that is either a snapshot **ref**
-(`e1`, `e2`, … from `snapshot`) **or a raw CSS selector** (`#login`, `.btn`,
-`input[name=email]`). So you can act without a snapshot when you already know the
-selector, or use refs after a `snapshot` when you don't.
-
-## Command reference
-
-Navigate / inspect:
-- `list` — browsers in this workspace and which one you own
-- `open|navigate|goto <url>` — focus your browser (or create one) and load `<url>`
-- `close [all]` — close your browser pane (or `close all` to close every one you own)
-- `pushstate <url>` — SPA client-side navigation (`history.pushState`, no reload)
-- `back` · `forward` · `reload`
-- `get url` · `get title` · `get text` · `get html` · `get console`
-- `get text|html|value|attr|count|box <selector> [attr]` — read a SPECIFIC element
-  (`get value #email`, `get attr a.logo href`, `get count li.item`, `get box #app`)
-- `is visible|enabled|checked <selector>` — boolean state check
-- `screenshot [--full]` — capture; returns `{"screenshot":"<png path>"}` (`--full` = whole page)
-- `pdf` — export the page to PDF; returns `{"pdf":"<path>"}`
-- `eval <js>` — run JS in the page; returns `{"result": ...}`
-
-Interact (drive a form / flow):
-- `snapshot [--viewport]` — tag interactive elements and return refs (`e1`, `e2`, …)
-- `click <target>` · `dblclick <target>` · `hover <target>` · `focus <target>`
-- `fill <target> <text>` — set an input/textarea value
-- `type <text>` — type into the currently focused field
-- `press <key> [target]` — a REAL keypress: `press Enter`, `press Tab`, `press Escape`,
-  `press Control+a`, `press ArrowDown` (focuses `target` first if given)
-- `select <target> <value>` — choose a `<select>` option
-- `check <target>` · `uncheck <target>` — toggle a checkbox/radio
-- `scroll up|down|left|right [px]` · `scrollintoview <target>`
-- `find <text|role|label|placeholder|testid|selector> <query> <action> [value]` —
-  locate ONE element semantically and act in one shot (action: click/fill/check/
-  uncheck/hover/focus/text), e.g. `find text "Sign in" click`, `find label Email fill me@x.com`
-
-Synchronize (always wait before asserting after a navigation/action):
-- `wait load` — wait for the page to finish loading
-- `wait selector <css>` — wait until an element appears
-- `wait text <substring>` — wait until text appears on the page
-- `wait url <substring|regex>` — wait until the URL matches (e.g. after a redirect)
-- `wait fn <js>` — wait until a JS expression is truthy (`wait fn "window.__ready===true"`)
-- `wait <ms>` — fixed pause
-- add `--timeout <ms>` to the polling waits (default 10s, max 30s)
-
-State / storage:
-- `storage local|session [get [key] | set <k> <v> | clear]` — web storage
-- `cookies [list|clear]` — cookies in this browser's session
-- `clipboard read|write [text]` — system clipboard
-- `set viewport <w> <h>` · `set viewport reset` — device-size emulation
-
-Network (capture requests while reproducing a bug):
-- `network start` → reproduce → `network list` (statuses, types, failures) → `network stop` → `network clear`
-
-Flags:
-- `--target <surface>` — pick a specific browser when you own more than one
-  (`surface` is the id returned by `open`/`list`; a `tab:…` id targets a tab in
-  the user's real browser — see below)
-- `--full` (screenshot) — capture the entire page, not just the viewport
-- `--timeout <ms>` — cap for the polling `wait` commands (default 10s, max 30s)
-
-## Interacting with a form — example
+Every action takes a **target**: either a ref (`e1`, `e2`, … from `snapshot`)
+or a CSS selector (`#login`, `.btn`, `input[name=email]`). Refs go stale when
+the page changes, so take a fresh `snapshot` after navigation.
 
 ```sh
 "$SPLITGRID_BROWSER_CLI" open http://localhost:5173/login
 "$SPLITGRID_BROWSER_CLI" wait selector "form"
-"$SPLITGRID_BROWSER_CLI" snapshot              # -> refs for the inputs/buttons
+"$SPLITGRID_BROWSER_CLI" snapshot              # -> refs for the inputs and buttons
 "$SPLITGRID_BROWSER_CLI" fill e3 "user@example.com"
 "$SPLITGRID_BROWSER_CLI" fill e4 "hunter2"
-"$SPLITGRID_BROWSER_CLI" click e5              # submit
+"$SPLITGRID_BROWSER_CLI" click e5
 "$SPLITGRID_BROWSER_CLI" wait text "Welcome"
 "$SPLITGRID_BROWSER_CLI" screenshot
 ```
 
-`snapshot` first — refs (`e1`, `e2`, …) come from it and are what `click`/`fill`/
-`select` resolve. If the page changed, take a fresh `snapshot`.
+## Commands
 
-## Ownership (when there are several browsers)
+Run `"$SPLITGRID_BROWSER_CLI" help` for the authoritative list.
 
-The browser you `open` becomes **yours** (bound to this terminal). Commands with
-no `--target` act on your browser. If you own more than one, the CLI returns
-`ambiguous_target` with the list — re-run with `--target <surface>`. It never
-silently picks the wrong one.
+Navigate and inspect:
+- `list`: browsers in this workspace and which one you own
+- `open|navigate|goto <url|path>`: focus your browser (or create one in your zone) and load it
+- `close [all]`: close your browser pane in your zone (`all` closes every one there)
+- `pushstate <url>`: SPA navigation via `history.pushState`, no reload
+- `back` · `forward` · `reload`
+- `get url|title|text|html|console`
+- `get text|html|value|attr|count|box <selector> [attr]`: read one element
+  (`get value #email`, `get attr a.logo href`, `get count li.item`, `get box #app`)
+- `is visible|enabled|checked <selector>`: boolean state
+- `screenshot [--full]`: returns `{"screenshot":"<png path>"}`; `--full` captures the whole page
+- `pdf`: export the page, returns `{"pdf":"<path>"}`
+- `eval <js>`: run JS in the page, returns `{"result": ...}`
+
+Interact:
+- `snapshot [--viewport]`: tag interactive elements and return refs
+- `click` · `dblclick` · `hover` · `focus <target>`
+- `fill <target> <text>`: set an input or textarea value
+- `type <text>`: type into the focused field
+- `press <key> [target]`: a real keypress (`Enter`, `Tab`, `Escape`, `Control+a`, `ArrowDown`)
+- `select <target> <value>`: choose a `<select>` option
+- `check` · `uncheck <target>`
+- `scroll up|down|left|right [px]` · `scrollintoview <target>`
+- `find <text|role|label|placeholder|testid|selector> <query> <action> [value]`:
+  locate one element and act on it (click, fill, check, uncheck, hover, focus,
+  text), e.g. `find text "Sign in" click`, `find label Email fill me@x.com`
+
+Wait:
+- `wait load` · `wait selector <css>` · `wait text <substring>`
+- `wait url <substring|regex>`: e.g. after a redirect
+- `wait fn <js>`: until the expression is truthy (`wait fn "window.__ready===true"`)
+- `wait <ms>`: fixed pause
+- `--timeout <ms>` on the polling waits (default 10s, max 30s)
+
+State and network:
+- `storage local|session [get [key] | set <k> <v> | clear]`
+- `cookies [list|clear]`
+- `clipboard read|write [text]`
+- `set viewport <w> <h>` · `set viewport reset`
+- `network start` → reproduce → `network list` (statuses, types, failures) → `network stop` → `network clear`
+
+## Several browsers and zones
+
+The browser you `open` is **yours** (bound to this terminal and zone), and
+commands without `--target` act on it. If you own more than one, the CLI
+returns `ambiguous_target` with the list. Re-run with `--target <surface>`,
+using the id from `open` or `list`.
+
+A new browser pane opens in this agent's zone, the framed region its terminals
+from `$SPLITGRID_TERMINAL_CLI` also live in. `--split right|down` and
+`--at <pane>` place it, as with terminals. A **subagent passes
+`--zone <name>`** on every call (the same short name each time), so it gets its
+own browser and zone instead of sharing the parent's. Only panes in the zone
+can be closed.
 
 ## Tabs in the user's real browser
 
-If the user has installed the SplitGrid browser extension and **activated** a tab
-in it, that tab is a second kind of surface with a `tab:` id (`tab:c1.842`), and
-`list` shows it next to the panes (`"kind":"tab"`, plus `writable` — false means
-read-only, so `eval`/`open` will be refused). Pass it like any other target:
-`"$SPLITGRID_BROWSER_CLI" screenshot --target tab:c1.842`. Useful when the page
-needs the user's real session (logged-in app, extensions, their profile).
+When the user has the SplitGrid browser extension and has activated a tab in
+it, `list` also shows that tab with a `tab:` id (`tab:c1.842`), `"kind":"tab"`
+and `writable` (false means read-only, so `eval` and `open` are refused). Pass
+it as `--target tab:c1.842`. Use it when the page needs the user's real
+session, such as a logged-in app.
 
-Supported on a tab today: `open|navigate|goto` · `back` · `forward` · `reload` ·
-`get url|title|text|html` · `eval` · `screenshot [--full]` · `close` (hands the
-tab back to the user). Everything else — `snapshot`, `click`, `fill`, `find`,
-`wait`, `press`, `network`, `cookies`, `storage`, `pdf`, `is`, `set viewport` —
-is pane-only for now and returns `not_supported_on_tab`; drop `--target` to run
-it against a browser pane instead.
-
-## Tips
-
-- One command per call; chain them in sequence, checking `ok` each time.
-- Always `wait load` (or `wait selector`/`wait text`) after `open`/`click` before
-  you `screenshot`, `get`, or `eval` — otherwise you read a half-rendered page.
-- Prefer `eval`/`get console` for precise assertions; use `screenshot` to actually
-  look when layout or visual state matters.
-- Run `"$SPLITGRID_BROWSER_CLI" help` for the authoritative command list.
+Supported on a tab: `open|navigate|goto`, `back`, `forward`, `reload`,
+`get url|title|text|html`, `eval`, `screenshot [--full]`, and `close` (which
+hands the tab back to the user). Every other command returns
+`not_supported_on_tab`. Drop `--target` to run it in a browser pane instead.

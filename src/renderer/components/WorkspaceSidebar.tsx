@@ -194,6 +194,7 @@ interface WorkspaceSidebarProps {
   sessionActivity?: Map<string, 'working' | 'stopped'>;
   agentNotify?: Map<string, number>;
   onUnviewedDone?: (sessionId: string, workspaceId: string) => void;
+  onAgentWaiting?: (sessionId: string, workspaceId: string) => void;
   muteAll?: boolean;
   onToggleWorkspaceMute?: (id: string, muted: boolean) => void;
   onToggleMuteAll?: (muted: boolean) => void;
@@ -248,6 +249,7 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
   sessionActivity,
   agentNotify,
   onUnviewedDone,
+  onAgentWaiting,
   muteAll,
   onToggleWorkspaceMute,
   onToggleMuteAll,
@@ -263,6 +265,7 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
     notifyAt: agentNotify ?? EMPTY_NOTIFY,
     getProcCommand: (sid) => terminalProcesses.get(sid)?.processCommand,
     onNewUnviewed: onUnviewedDone,
+    onNewWaiting: onAgentWaiting,
   });
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const [editingId, setEditingId] = useState<string | null>(null);

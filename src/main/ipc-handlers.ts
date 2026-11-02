@@ -17,6 +17,7 @@ import { SQLConnectionStore } from './sql-connection-store';
 import { extensionFor } from './sql/export';
 import { AppSettingsStore } from './app-settings-store';
 import { applyAgentIntegrations } from './agent-integrations';
+import { setTerminalSkillLongRunningInPanes } from './agent-skills/terminal-skill';
 import { applyTerminalMouseConfig } from './terminal-mouse-config';
 import { setTerminalOwnerResolver } from './agent-terminal-bridge';
 import { setBrowserOwnerResolver } from './agent-browser-bridge';
@@ -794,9 +795,12 @@ export function registerIPCHandlers(
     }
     // Install/uninstall the global agent artifacts when either the master opt-in
     // or the terminal-control sub-opt-in flips (the latter installs/removes just
-    // the terminal skill + env while the master stays on).
+    // the terminal skill + env while the master stays on). The long-running
+    // process policy rewrites the installed sg-terminal skill.
+    setTerminalSkillLongRunningInPanes(!!next.agentLongRunningInPanes);
     if (!!prev.agentIntegrations !== !!next.agentIntegrations ||
         !!prev.agentTerminalControl !== !!next.agentTerminalControl ||
+        !!prev.agentLongRunningInPanes !== !!next.agentLongRunningInPanes ||
         !!prev.agentSqlControl !== !!next.agentSqlControl ||
         !!prev.agentSqlWrite !== !!next.agentSqlWrite ||
         !!prev.agentSftpControl !== !!next.agentSftpControl ||

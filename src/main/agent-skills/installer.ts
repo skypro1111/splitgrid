@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { browserSkillResourcePath, terminalSkillResourcePath, sqlSkillResourcePath, sftpSkillResourcePath, agentPaneSkillResourcePath, historySkillResourcePath } from '../agent-hooks/paths';
+import { terminalSkillText } from './terminal-skill';
 
 // ─── Agent skill install ─────────────────────────────────────────────────────
 // Ships splitgrid's Claude Code skills into the agent's global skills dir so a
@@ -31,8 +32,11 @@ function claudeConfigDir(): string {
   return override && override.trim() ? override : path.join(homedir(), '.claude');
 }
 
-/** Install (or refresh) one bundled skill into ~/.claude/skills/<name>. */
-function installSkill(claudeDir: string, name: string, source: string): void {
+/**
+ * Install (or refresh) one bundled skill into ~/.claude/skills/<name>.
+ * `render` produces the installed text when it isn't the file verbatim.
+ */
+function installSkill(claudeDir: string, name: string, source: string, render?: () => string): void {
   if (!existsSync(source)) {
     console.error(`[agent-skills] bundled skill missing at ${source}`);
     return;
@@ -40,7 +44,7 @@ function installSkill(claudeDir: string, name: string, source: string): void {
   const destDir = path.join(claudeDir, 'skills', name);
   const dest = path.join(destDir, 'SKILL.md');
   try {
-    const desired = readFileSync(source, 'utf8');
+    const desired = render ? render() : readFileSync(source, 'utf8');
     // Write only when missing or stale, so we refresh on app update without
     // churning the file on every launch.
     const current = existsSync(dest) ? readFileSync(dest, 'utf8') : null;
@@ -81,7 +85,7 @@ export function syncInstalledAgentSkills(terminalControl: boolean, sqlControl = 
   for (const legacy of LEGACY_SKILLS) removeSkill(claudeDir, legacy);
 
   installSkill(claudeDir, BROWSER_SKILL, browserSkillResourcePath());
-  if (terminalControl) installSkill(claudeDir, TERMINAL_SKILL, terminalSkillResourcePath());
+  if (terminalControl) installSkill(claudeDir, TERMINAL_SKILL, terminalSkillResourcePath(), terminalSkillText);
   else removeSkill(claudeDir, TERMINAL_SKILL);
   if (terminalControl) installSkill(claudeDir, AGENT_PANE_SKILL, agentPaneSkillResourcePath());
   else removeSkill(claudeDir, AGENT_PANE_SKILL);

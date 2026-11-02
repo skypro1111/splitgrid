@@ -3,6 +3,9 @@ import type { Workspace, ContainerContent } from '../../shared/types';
 import { getBrowser } from '../components/browserRegistry';
 import { parseArgv, MAX_WAIT_MS } from '../../shared/browser-argv';
 import { decideBrowserTarget } from './browserTargets';
+import { normalizeBrowserInput } from '../../shared/browser-url';
+import { DEFAULT_ZONE, type ZoneSplit } from '../../shared/agent-zones';
+import { inZone, resolveZoneRequest, zoneOwner, zonePanes } from './agentZone';
 
 const BROWSER_PARTITION = 'persist:browser';
 
@@ -13,10 +16,17 @@ const BROWSER_PARTITION = 'persist:browser';
 // registry), and replies. Ownership rule: an agent owns the browser it opened
 // (browserOwnerTerminal === its $SPLITGRID_TERMINAL), so two agents in one
 // workspace never collide; ambiguity is reported, never silently guessed.
+// Ownership is per zone (terminal + --zone name), since subagents share their
+// parent's terminal, and a new pane opens in the caller's zone.
 
 interface BridgeDeps {
   workspaces: Workspace[];
-  createBrowserContainer: (workspaceId: string, content: ContainerContent) => string;
+  openInZone: (
+    workspaceId: string,
+    zone: { terminal: string; name: string; label: string },
+    content: ContainerContent,
+    opts?: { at?: string; split?: ZoneSplit },
+  ) => string;
   updateContainerContent: (containerId: string, content: ContainerContent) => void;
   removeContainer: (containerId: string) => void;
 }
@@ -40,8 +50,10 @@ const HELP = {
   usage: 'splitgrid-browser <command> [args]   (target = a snapshot ref "e1" OR a CSS selector)',
   commands: [
     'list                         — browsers in this workspace (with ownership)',
-    'open|navigate|goto <url>     — focus/create a browser and load url',
-    'close [all]                  — close your browser pane (or all you own)',
+    'open|navigate|goto <url>     — focus/create a browser and load url; a local file path',
+    '                               (absolute) loads as file://, localhost:port as http://',
+    '     [--split right|down] [--at <pane>]  — where a NEW pane goes in your zone',
+    'close [all]                  — close your browser pane in your zone (or all of them)',
     'pushstate <url>              — SPA client-side navigation (history.pushState)',
     'back | forward | reload',
     'get url|title|text|html|console',
@@ -66,6 +78,7 @@ const HELP = {
     'clipboard read|write [text]',
     'network start|list|clear|stop  — capture requests (status/type/failures)',
     '--target <surface>           — disambiguate when you own several browsers',
+    '--zone <name>                — act as that zone (a subagent passes its own; default: main)',
     '--timeout <ms>               — cap for wait selector/text/url/fn/load (default 10s)',
   ],
 };
@@ -102,6 +115,11 @@ function browsersOf(ws: Workspace): Array<{ id: string; content: ContainerConten
   return ws.containers.filter((c) => c.content.type === 'browser').map((c) => ({ id: c.id, content: c.content }));
 }
 
+// Who owns a browser pane, as one key: its agent's terminal plus zone name.
+function ownerKey(content: ContainerContent): string | undefined {
+  return content.browserOwnerTerminal ? `${content.browserOwnerTerminal}#${content.browserOwnerZone ?? DEFAULT_ZONE}` : undefined;
+}
+
 function infoFor(id: string, content: ContainerContent): BrowserInfo {
   const live = getBrowser(id);
   return {
@@ -113,8 +131,8 @@ function infoFor(id: string, content: ContainerContent): BrowserInfo {
 }
 
 async function runCommand(deps: BridgeDeps, terminal: string, argv: string[]): Promise<Reply> {
-  const { workspaces, createBrowserContainer, updateContainerContent, removeContainer } = deps;
-  const { positional, target, timeoutMs, viewport, full } = parseArgv(argv);
+  const { workspaces, updateContainerContent, removeContainer } = deps;
+  const { positional, target, timeoutMs, viewport, full, zone: zoneName, at, split } = parseArgv(argv);
   const waitMs = timeoutMs ?? DEFAULT_WAIT_MS;
   const cmd = (positional[0] || '').toLowerCase();
   const rest = positional.slice(1);
@@ -142,6 +160,9 @@ async function runCommand(deps: BridgeDeps, terminal: string, argv: string[]): P
   if (!callerWs) return { ok: false, error: 'unknown_terminal', data: { message: 'cannot locate the calling terminal\'s workspace' } };
 
   const list = browsersOf(callerWs);
+  const owner = zoneOwner(terminal, zoneName);
+  const me = `${owner.terminal}#${owner.name}`;
+  const claimed = { browserOwnerTerminal: terminal, browserOwnerZone: owner.name === DEFAULT_ZONE ? undefined : owner.name };
 
   // `list` — enumerate this workspace's browsers (with ownership).
   if (cmd === 'list') {
@@ -150,7 +171,7 @@ async function runCommand(deps: BridgeDeps, terminal: string, argv: string[]): P
       data: {
         browsers: list.map((b) => {
           const info = infoFor(b.id, b.content);
-          return { ...info, mine: info.owner === terminal };
+          return { ...info, mine: ownerKey(b.content) === me, inZone: inZone(callerWs, owner, b.id) };
         }),
       },
     };
@@ -159,56 +180,62 @@ async function runCommand(deps: BridgeDeps, terminal: string, argv: string[]): P
   // open / navigate — ensure a target browser, navigate to the url, auto-create
   // one when the workspace has none (or none owned/claimable).
   if (cmd === 'open' || cmd === 'navigate' || cmd === 'goto') {
-    const url = rest[0];
+    const url = normalizeBrowserInput(rest.join(' '));
     if (!url) return { ok: false, error: 'missing_url', data: { message: `usage: ${cmd} <url>` } };
 
-    const resolved = resolveExistingTarget(list, terminal, target);
+    const resolved = resolveExistingTarget(list, me, target);
     if (resolved.id) {
       // Reuse: navigate the live pane + persist the url.
       const api = getBrowser(resolved.id);
       if (api) api.navigate(url);
       const c = callerWs.containers.find((x) => x.id === resolved.id);
       if (c && c.content.type === 'browser') {
-        updateContainerContent(resolved.id, { ...c.content, browserUrl: url, ...(resolved.claim ? { browserOwnerTerminal: terminal } : {}) });
+        updateContainerContent(resolved.id, { ...c.content, browserUrl: url, ...(resolved.claim ? claimed : {}) });
       }
       return { ok: true, data: { surface: resolved.id, url, reused: true } };
     }
     if (resolved.error && cmd !== 'open' && resolved.kind === 'ambiguous') return resolved.error;
 
-    // Create a new browser pane owned by this agent.
-    const id = createBrowserContainer(callerWs.id, {
+    // Create a new browser pane owned by this agent, in its zone.
+    const zone = resolveZoneRequest(callerWs, terminal, { zone: zoneName, at, split });
+    if (!zone.ok) return zone;
+    const id = deps.openInZone(callerWs.id, zone.req.owner, {
       type: 'browser',
       browserUrl: url,
       browserPartition: BROWSER_PARTITION,
-      browserOwnerTerminal: terminal,
+      ...claimed,
       label: 'Browser',
-    });
-    return { ok: true, data: { surface: id, url, created: true } };
+    }, { at: zone.req.at, split: zone.req.split });
+    return { ok: true, data: { surface: id, url, created: true, zone: owner.name } };
   }
 
   // close — remove a browser pane. `close all` closes every browser this terminal
   // owns; otherwise close the resolved target (explicit --target or the owned one).
   // No live `api` needed — the pane may already be tearing down.
   if (cmd === 'close' || cmd === 'quit') {
+    // Only panes in the caller's zone: a claimed user browser stays open.
     if ((rest[0] || '').toLowerCase() === 'all') {
-      const mine = list.filter((b) => b.content.browserOwnerTerminal === terminal);
+      const mine = list.filter((b) => inZone(callerWs, owner, b.id));
       mine.forEach((b) => removeContainer(b.id));
       return { ok: true, data: { closed: mine.map((b) => b.id), count: mine.length } };
     }
-    const r = resolveExistingTarget(list, terminal, target);
+    const r = resolveExistingTarget(list, me, target);
     if (!r.id) return r.error ?? { ok: false, error: 'no_browser', data: { message: 'no browser to close; run: list' } };
+    if (!inZone(callerWs, owner, r.id)) {
+      return { ok: false, error: 'not_in_zone', data: { message: 'only browser panes in your zone can be closed; ask the user to close this one', surface: r.id, zone: owner.name, panes: zonePanes(callerWs, owner) } };
+    }
     removeContainer(r.id);
     return { ok: true, data: { surface: r.id, closed: true } };
   }
 
   // All remaining commands act on an existing pane — resolve it strictly.
-  const resolved = resolveExistingTarget(list, terminal, target);
+  const resolved = resolveExistingTarget(list, me, target);
   if (!resolved.id) {
     return resolved.error ?? { ok: false, error: 'no_browser', data: { message: 'no browser in this workspace; run: open <url>' } };
   }
   if (resolved.claim) {
     const c = callerWs.containers.find((x) => x.id === resolved.id);
-    if (c && c.content.type === 'browser') updateContainerContent(resolved.id, { ...c.content, browserOwnerTerminal: terminal });
+    if (c && c.content.type === 'browser') updateContainerContent(resolved.id, { ...c.content, ...claimed });
   }
 
   const api = getBrowser(resolved.id);
@@ -453,14 +480,14 @@ interface ResolveResult {
 // here we only attach presentation (live url/title via infoFor) to the errors.
 function resolveExistingTarget(
   list: Array<{ id: string; content: ContainerContent }>,
-  terminal: string,
+  me: string,
   explicitTarget?: string,
 ): ResolveResult {
   const byId = (id: string) => list.find((b) => b.id === id)!;
   const infos = (ids: string[]) => ids.map((id) => { const b = byId(id); return infoFor(b.id, b.content); });
   const decision = decideBrowserTarget(
-    list.map((b) => ({ id: b.id, ownerTerminal: b.content.browserOwnerTerminal })),
-    terminal,
+    list.map((b) => ({ id: b.id, ownerTerminal: ownerKey(b.content) })),
+    me,
     explicitTarget,
   );
   switch (decision.kind) {

@@ -18,9 +18,19 @@ set "ENDPOINT=%SPLITGRID_BROWSER_ENDPOINT%"
 if "%ENDPOINT%"=="" set "ENDPOINT=http://127.0.0.1:19558/browser"
 
 set "ARGV="
+set "CMD=%~1"
+set "N=0"
 :loop
 if "%~1"=="" goto done
+set /a N+=1
 set "A=%~1"
+rem `open <file>`: the pane can't see this shell's cwd, so an existing local
+rem path goes over absolute (%~f1); the app turns it into file://.
+if !N!==2 if exist "%~1" (
+  if /i "!CMD!"=="open" set "A=%~f1"
+  if /i "!CMD!"=="navigate" set "A=%~f1"
+  if /i "!CMD!"=="goto" set "A=%~f1"
+)
 set "A=!A:\=\\!"
 if defined ARGV (set "ARGV=!ARGV!,\"!A!\"") else (set "ARGV=\"!A!\"")
 shift

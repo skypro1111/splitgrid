@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react';
 import type { Workspace, ContainerContent } from '../../shared/types';
 import { getSqlWorkbench, type SqlWorkbenchHandle } from '../components/sql/sqlWorkbenchRegistry';
 import { classifyBatch } from '../components/sql/sqlClassify';
+import type { ZoneSplit } from '../../shared/agent-zones';
+import { resolveZoneRequest, takeZoneFlags } from './agentZone';
 
 // ─── Agent SQL bridge (renderer side) ────────────────────────────────────────
 // Receives an agent's SQL command (forwarded from main, keyed by reqId), resolves
@@ -18,15 +20,20 @@ import { classifyBatch } from '../components/sql/sqlClassify';
 // CONTAINER POLICY (workspace-scoped, never cross-workspace):
 //   • exactly one SQL pane → use it.
 //   • none → for commands that need a pane we AUTO-CREATE one (low friction; the
-//     agent then runs `use <conn>` to connect it). `list`/`connections` work
-//     without one.
+//     agent then runs `use <conn>` to connect it), in the caller's agent zone.
+//     `list`/`connections` work without one.
 //   • multiple → act on the FIRST and report `targetedMultiple` so the agent
 //     knows there were others (keeps the surface simple; no --container needed).
 
 interface BridgeDeps {
   workspaces: Workspace[];
-  // Content-agnostic container creator (same one the browser/terminal bridges use).
-  createContainer: (workspaceId: string, content: ContainerContent) => string;
+  // Create a container in the calling agent's zone (shared/agent-zones).
+  openInZone: (
+    workspaceId: string,
+    zone: { terminal: string; name: string; label: string },
+    content: ContainerContent,
+    opts?: { at?: string; split?: ZoneSplit },
+  ) => string;
 }
 
 type Reply = { ok: boolean; data?: Record<string, unknown>; error?: string };
@@ -38,6 +45,7 @@ const HELP = {
     'connections                  — saved SQL connections (label, dialect, host, db)',
     'use <conn> [database]        — switch the target pane to a saved connection',
     'open <conn>                  — create a SQL pane if none, then `use <conn>`',
+    '     [--zone <name>] [--split right|down] [--at <pane>]  — where a created pane goes in your zone',
     'tables [schema]              — tables/views in a schema (default current)',
     'columns <table> [schema]     — columns with type / nullable / PK',
     'ddl <table> [schema]         — the table\'s DDL text',
@@ -111,9 +119,12 @@ function renderTextTable(columns: string[], rows: Array<Record<string, unknown>>
 }
 
 async function runSqlCommand(deps: BridgeDeps, terminal: string, argv: string[], writeAllowed: boolean): Promise<Reply> {
-  const { workspaces, createContainer } = deps;
+  const { workspaces } = deps;
   const cmd = (argv[0] || '').toLowerCase();
-  const rest = argv.slice(1);
+  // Zone flags place an auto-created pane; never parsed out of SQL text.
+  const { flags, rest } = cmd === 'query' || cmd === 'explain'
+    ? { flags: {}, rest: argv.slice(1) }
+    : takeZoneFlags(argv.slice(1));
 
   if (cmd === 'help' || cmd === '--help' || cmd === '-h' || cmd === '') {
     return { ok: true, data: { ...HELP } };
@@ -184,7 +195,9 @@ async function runSqlCommand(deps: BridgeDeps, terminal: string, argv: string[],
     let id = panes[0]?.id;
     let created = false;
     if (!id) {
-      id = createContainer(callerWs.id, { type: 'sql', label: 'SQL Client' });
+      const zone = resolveZoneRequest(callerWs, terminal, flags);
+      if (!zone.ok) return zone;
+      id = deps.openInZone(callerWs.id, zone.req.owner, { type: 'sql', label: 'SQL Client' }, { at: zone.req.at, split: zone.req.split });
       created = true;
     }
     // The freshly-created pane registers its handle on mount; poll briefly.
@@ -201,7 +214,9 @@ async function runSqlCommand(deps: BridgeDeps, terminal: string, argv: string[],
   // All remaining commands need a pane. Auto-create one if none exists.
   let { handle, id, multiple } = resolveHandle();
   if (!handle) {
-    id = createContainer(callerWs.id, { type: 'sql', label: 'SQL Client' });
+    const zone = resolveZoneRequest(callerWs, terminal, flags);
+    if (!zone.ok) return zone;
+    id = deps.openInZone(callerWs.id, zone.req.owner, { type: 'sql', label: 'SQL Client' }, { at: zone.req.at, split: zone.req.split });
     handle = await waitForHandle(id);
     multiple = false;
     if (!handle) return { ok: false, error: 'pane_not_ready', data: { surface: id, message: 'opened a SQL pane; retry the command' } };

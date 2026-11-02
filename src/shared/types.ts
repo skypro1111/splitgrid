@@ -24,6 +24,7 @@ import type {
   AgentThreadSummary,
 } from './agent-types';
 import type { HistoryDistillEstimate, HistoryEstimate, HistoryStatus } from './history';
+import type { BrowserShortcutAction } from './browser-shortcuts';
 
 // --- SSH Connection ---
 
@@ -559,6 +560,9 @@ export interface ContainerContent {
   // in one workspace each control their own browser without collision — the
   // agent owns the pane it opened. Undefined = user-opened / unowned.
   browserOwnerTerminal?: string;
+  // The owner's zone name (shared/agent-zones) — subagents share a terminal, so
+  // ownership is the terminal plus this. Undefined = the 'main' zone.
+  browserOwnerZone?: string;
   // SQL
   sqlState?: SQLContainerState;
   // Git repository pane
@@ -594,17 +598,42 @@ export interface Container {
 
 export type SplitDirection = 'horizontal' | 'vertical';
 
+/**
+ * Marks the node an agent's panes live under — its "zone". An agent (keyed by
+ * its $SPLITGRID_TERMINAL plus a zone name, so subagents sharing one terminal can
+ * each have their own) opens its first pane next to its own terminal; every pane
+ * after that splits one of its zone's panes, so they all stay inside this
+ * subtree instead of spreading across the workspace. The tag sits on the
+ * subtree's root and moves with it as that root is split or collapses (see
+ * shared/layout-tree). An optional field, so older builds just ignore it.
+ */
+export interface AgentZoneTag {
+  terminal: string;
+  name: string;
+  /** Shown in the zone's frame header. */
+  label: string;
+}
+// A zone may also hold a tray (`zoneTray` on the node that roots it): a thin
+// strip along the zone's bottom where background processes (a dev server, a
+// watcher) sit side by side, so they stay visible without taking real space.
+
 export interface SplitNode {
   type: 'split';
   direction: SplitDirection;
   ratio: number; // 0-1, first child takes this fraction
   first: LayoutNode;
   second: LayoutNode;
+  zone?: AgentZoneTag;
+  /** Roots a zone's tray: the thin strip at its bottom for background processes. */
+  zoneTray?: true;
 }
 
 export interface LeafNode {
   type: 'leaf';
   containerId: string;
+  zone?: AgentZoneTag;
+  /** Roots a zone's tray: the thin strip at its bottom for background processes. */
+  zoneTray?: true;
 }
 
 export type LayoutNode = SplitNode | LeafNode;
@@ -758,10 +787,24 @@ export interface QuickChatHotkey {
 }
 
 /** Global notification defaults, stored app-wide (app-settings.json). */
+export interface AgentNotificationRequest {
+  workspaceId: string;
+  /** Terminal session id. */
+  sessionId: string;
+  title: string;
+  body: string;
+}
+
 export interface AppSettings {
   defaultSoundId: string;
   defaultVolume: number;
   muteAll: boolean;
+  // Also post a system (OS) notification — clicking it opens the workspace —
+  // when an agent needs attention while the window is unfocused. Undefined → on.
+  systemNotifications?: boolean;
+  // Notify (sound + system notification) when an agent starts Waiting for
+  // input or a permission decision, not only when it is Done. Undefined → on.
+  notifyOnWaiting?: boolean;
   // Absolute path of the shell to spawn for new local terminals on Windows
   // (one of ShellOption.path from listShells). Empty/undefined → OS default (cmd).
   windowsDefaultShell?: string;
@@ -796,6 +839,11 @@ export interface AppSettings {
   // sibling shell runs arbitrary commands, so it's gated separately from browser
   // control. Undefined/false → no terminal skill, no terminal env.
   agentTerminalControl?: boolean;
+  // How the sg-terminal skill tells agents to run long-running processes (dev
+  // servers, watchers, log tails): true → always in a small tray pane the user
+  // can watch; false → simple background jobs may stay background Bash jobs.
+  // SSH gets its own pane either way. Undefined → false.
+  agentLongRunningInPanes?: boolean;
   // Sub-opt-in (only meaningful while agentIntegrations is on): lets an agent run
   // queries, inspect schema and export results against the SQL component —
   // injects the SPLITGRID_SQL_* env. Read-only by default. Undefined/false → no
@@ -1314,6 +1362,9 @@ export interface ElectronAPI {
   /** Focus-mode toggle forwarded from a browser pane's before-input-event (its
    * keys never reach the renderer window). */
   onFocusModeToggle(callback: () => void): () => void;
+  /** Browser-pane shortcuts main took before they reached the page (or, with
+   * id -1, from the host window), addressed by the guest's webContents id. */
+  onBrowserGuestShortcut(callback: (webContentsId: number, action: BrowserShortcutAction) => void): () => void;
   onFullScreenChange(callback: (isFullScreen: boolean) => void): () => void;
   onEnvironmentStateChange(callback: () => void): () => void;
   onOpenEnvironmentPicker(callback: () => void): () => void;
@@ -1440,6 +1491,12 @@ export interface ElectronAPI {
   // driving this terminal remotely). Used to suppress the desktop "done" sound
   // while the user is actively present on the web viewer.
   onTerminalWebInput(callback: (sessionId: string) => void): () => void;
+
+  // System (OS) notification for an agent that needs attention. Resolves false
+  // when the platform can't post one. Clicking it focuses this window and fires
+  // onAgentNotificationActivate with the same workspace/terminal.
+  showAgentNotification(req: AgentNotificationRequest): Promise<boolean>;
+  onAgentNotificationActivate(callback: (target: { workspaceId: string; sessionId: string }) => void): () => void;
 
   // Agent browser control: subscribe to forwarded browser commands and reply
   // with the result keyed by reqId.

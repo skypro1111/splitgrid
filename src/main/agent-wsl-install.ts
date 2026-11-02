@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { detectWslDistros, wslExePath } from './wsl';
 import { hookHelperPath, browserSkillResourcePath, terminalSkillResourcePath, sqlSkillResourcePath, sftpSkillResourcePath, agentPaneSkillResourcePath, historySkillResourcePath } from './agent-hooks/paths';
+import { terminalSkillText } from './agent-skills/terminal-skill';
 import { applyHooksToConfig } from './agent-hooks/installer';
 import { CLAUDE } from './agent-hooks/registry';
 import { winPathToWsl } from './wsl-paths';
@@ -288,7 +289,7 @@ export async function syncWslAgentArtifacts(terminalControl = false, sqlControl 
     console.error(`[agent-wsl] bundled skill missing at ${terminalSkillSrc}`);
     return;
   }
-  const terminalSkill = readFileSync(terminalSkillSrc, 'utf8');
+  const terminalSkill = terminalSkillText();
 
   const sqlSkillSrc = sqlSkillResourcePath();
   if (!existsSync(sqlSkillSrc)) {

@@ -14,52 +14,11 @@ import type {
   RecentCommand,
   SavedPrompt,
 } from '../../shared/types';
-import { pruneLayoutTree } from '../../shared/layout-tree';
+import { firstLeafId, pruneLayoutTree, removeLeaf, replaceLeaf, swapLeaves } from '../../shared/layout-tree';
+import { openInZone, type ZoneSplit } from '../../shared/agent-zones';
 
 // Cap on the rolling "recently run" command feed (environment-scoped).
 const RECENT_COMMAND_LIMIT = 40;
-
-// --- Tree helpers ---
-
-function replaceLeaf(node: LayoutNode, containerId: string, replacement: LayoutNode): LayoutNode {
-  if (node.type === 'leaf') {
-    return node.containerId === containerId ? replacement : node;
-  }
-  const newFirst = replaceLeaf(node.first, containerId, replacement);
-  if (newFirst !== node.first) return { ...node, first: newFirst };
-  const newSecond = replaceLeaf(node.second, containerId, replacement);
-  if (newSecond !== node.second) return { ...node, second: newSecond };
-  return node;
-}
-
-function removeLeaf(tree: LayoutNode, containerId: string): LayoutNode | null {
-  if (tree.type === 'leaf') {
-    return tree.containerId === containerId ? null : tree;
-  }
-  // Direct child match → promote sibling
-  if (tree.first.type === 'leaf' && tree.first.containerId === containerId) return tree.second;
-  if (tree.second.type === 'leaf' && tree.second.containerId === containerId) return tree.first;
-  // Recurse
-  const newFirst = removeLeaf(tree.first, containerId);
-  if (newFirst !== tree.first) return { ...tree, first: newFirst! };
-  const newSecond = removeLeaf(tree.second, containerId);
-  if (newSecond !== tree.second) return { ...tree, second: newSecond! };
-  return tree;
-}
-
-function firstLeafId(node: LayoutNode): string | null {
-  if (node.type === 'leaf') return node.containerId;
-  return firstLeafId(node.first) ?? firstLeafId(node.second);
-}
-
-function swapLeaves(node: LayoutNode, id1: string, id2: string): LayoutNode {
-  if (node.type === 'leaf') {
-    if (node.containerId === id1) return { ...node, containerId: id2 };
-    if (node.containerId === id2) return { ...node, containerId: id1 };
-    return node;
-  }
-  return { ...node, first: swapLeaves(node.first, id1, id2), second: swapLeaves(node.second, id1, id2) };
-}
 
 // --- Default workspace ---
 
@@ -195,6 +154,42 @@ export function useWorkspace() {
           return {
             ...ws,
             layoutTree: replaceLeaf(ws.layoutTree, anchor, splitNode),
+            containers: [...ws.containers, { id, content }],
+            containerZooms: { ...ws.containerZooms, [id]: 13 },
+            updatedAt: now,
+          };
+        }),
+      );
+      return id;
+    },
+    [],
+  );
+
+  // Create a filled container inside the calling agent's zone (see
+  // shared/agent-zones): the first one splits the agent's own terminal pane and
+  // starts the zone, later ones split a pane of that zone. The bridges check
+  // `at` against the workspace before calling; if the pane vanished meanwhile,
+  // the new pane goes after the zone's last one instead.
+  const openInAgentZone = useCallback(
+    (
+      workspaceId: string,
+      zone: { terminal: string; name: string; label: string },
+      content: ContainerContent,
+      opts: { at?: string; split?: ZoneSplit; background?: boolean } = {},
+    ): string => {
+      const id = uuidv4();
+      const now = Date.now();
+      setWorkspaces((prev) =>
+        prev.map((ws) => {
+          if (ws.id !== workspaceId) return ws;
+          const anchorId = ws.containers.find((c) => c.content.type === 'terminal' && c.content.terminalId === zone.terminal)?.id ?? ws.focusedContainerId;
+          const args = { ...zone, newId: id, anchorId, split: opts.split, background: opts.background };
+          let placed = openInZone(ws.layoutTree, { ...args, at: opts.at });
+          if (!placed.ok) placed = openInZone(ws.layoutTree, args);
+          if (!placed.ok) return ws;
+          return {
+            ...ws,
+            layoutTree: placed.tree,
             containers: [...ws.containers, { id, content }],
             containerZooms: { ...ws.containerZooms, [id]: 13 },
             updatedAt: now,
@@ -765,6 +760,7 @@ export function useWorkspace() {
     addFirstContainer,
     splitContainer,
     createBrowserContainer,
+    openInAgentZone,
     updateContainerContent,
     removeContainer,
     updateLayoutTree,

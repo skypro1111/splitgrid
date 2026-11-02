@@ -32,6 +32,12 @@ interface Inputs {
    * This is the exact edge we play a notification sound on.
    */
   onNewUnviewed?: (sessionId: string, workspaceId: string) => void;
+  /**
+   * Fired once when an agent terminal starts waiting (a permission prompt or a
+   * question) while the user isn't looking at it. Waiting clears itself as soon
+   * as the agent resumes, so there is no viewed bookkeeping — only the edge.
+   */
+  onNewWaiting?: (sessionId: string, workspaceId: string) => void;
 }
 
 const TICK_MS = 1000;
@@ -131,6 +137,7 @@ export function useTerminalViewState(inputs: Inputs): TerminalViewState {
     const unviewedSessions = new Set<string>();
     const unviewedWorkspaces = new Set<string>();
     const unviewedOwner = new Map<string, string>(); // sid -> workspaceId
+    const newWaiting: Array<[string, string]> = []; // [sid, workspaceId]
 
     for (const ws of workspaces) {
       const wsViewed = ws.id === activeWorkspaceId && focused;
@@ -170,6 +177,9 @@ export function useTerminalViewState(inputs: Inputs): TerminalViewState {
         if (isNewDoneEdge(kind, lastKindRef.current.get(sid), freshNotify)) {
           doneAtRef.current.set(sid, now);
         }
+        if (kind === 'waiting' && lastKindRef.current.get(sid) !== 'waiting' && !viewed) {
+          newWaiting.push([sid, ws.id]);
+        }
         if (kind) lastKindRef.current.set(sid, kind);
         if (viewed) viewedAtRef.current.set(sid, now);
 
@@ -189,11 +199,14 @@ export function useTerminalViewState(inputs: Inputs): TerminalViewState {
     // Fire the rising-edge callback for sessions that just became unviewed.
     // The first pass only seeds the baseline so restored "done" state on launch
     // doesn't trigger a burst of notifications.
-    const onNewUnviewed = inputsRef.current.onNewUnviewed;
+    const { onNewUnviewed, onNewWaiting } = inputsRef.current;
     if (primedRef.current && onNewUnviewed) {
       for (const [sid, wsId] of unviewedOwner) {
         if (!prevUnviewedRef.current.has(sid)) onNewUnviewed(sid, wsId);
       }
+    }
+    if (primedRef.current && onNewWaiting) {
+      for (const [sid, wsId] of newWaiting) onNewWaiting(sid, wsId);
     }
     primedRef.current = true;
     prevUnviewedRef.current = unviewedSessions;

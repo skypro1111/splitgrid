@@ -14,6 +14,8 @@ const DEFAULTS: AppSettings = {
   defaultSoundId: 'notification-new-1',
   defaultVolume: 0.5,
   muteAll: false,
+  systemNotifications: true,
+  notifyOnWaiting: true,
   terminalRenderer: 'xterm',
   backgroundColor: DEFAULT_BACKGROUND_COLOR,
   // Off by default: splitgrid installs no global hooks/skills and injects no
@@ -21,6 +23,9 @@ const DEFAULTS: AppSettings = {
   agentIntegrations: false,
   // Sub-opt-in under agentIntegrations: cross-terminal control. Off by default.
   agentTerminalControl: false,
+  // sg-terminal: simple background jobs may stay background Bash jobs; on puts
+  // every long-running process in a tray pane.
+  agentLongRunningInPanes: false,
   // Sub-opt-in under agentIntegrations: SQL control (read-only). Off by default.
   agentSqlControl: false,
   // Sub-sub-opt-in under agentSqlControl: allow write/DDL. Off by default.
@@ -112,6 +117,8 @@ export class AppSettingsStore {
         defaultSoundId: typeof o.defaultSoundId === 'string' ? o.defaultSoundId : DEFAULTS.defaultSoundId,
         defaultVolume: clamp01(o.defaultVolume, DEFAULTS.defaultVolume),
         muteAll: typeof o.muteAll === 'boolean' ? o.muteAll : DEFAULTS.muteAll,
+        systemNotifications: typeof o.systemNotifications === 'boolean' ? o.systemNotifications : DEFAULTS.systemNotifications,
+        notifyOnWaiting: typeof o.notifyOnWaiting === 'boolean' ? o.notifyOnWaiting : DEFAULTS.notifyOnWaiting,
         windowsDefaultShell: typeof o.windowsDefaultShell === 'string' ? o.windowsDefaultShell : undefined,
         terminalRenderer: o.terminalRenderer === 'ghostty' ? 'ghostty' : DEFAULTS.terminalRenderer,
         backgroundColor: parseBackgroundColor(o.backgroundColor as string) ?? DEFAULT_BACKGROUND_COLOR,
@@ -122,6 +129,7 @@ export class AppSettingsStore {
         quickChatResumeGraceSec: normalizeResumeGraceSec(o.quickChatResumeGraceSec),
         agentIntegrations: typeof o.agentIntegrations === 'boolean' ? o.agentIntegrations : DEFAULTS.agentIntegrations,
         agentTerminalControl: typeof o.agentTerminalControl === 'boolean' ? o.agentTerminalControl : DEFAULTS.agentTerminalControl,
+        agentLongRunningInPanes: typeof o.agentLongRunningInPanes === 'boolean' ? o.agentLongRunningInPanes : DEFAULTS.agentLongRunningInPanes,
         agentSqlControl: typeof o.agentSqlControl === 'boolean' ? o.agentSqlControl : DEFAULTS.agentSqlControl,
         agentSqlWrite: typeof o.agentSqlWrite === 'boolean' ? o.agentSqlWrite : DEFAULTS.agentSqlWrite,
         agentSftpControl: typeof o.agentSftpControl === 'boolean' ? o.agentSftpControl : DEFAULTS.agentSftpControl,
@@ -143,6 +151,8 @@ export class AppSettingsStore {
       defaultSoundId: typeof settings.defaultSoundId === 'string' ? settings.defaultSoundId : DEFAULTS.defaultSoundId,
       defaultVolume: clamp01(settings.defaultVolume, DEFAULTS.defaultVolume),
       muteAll: !!settings.muteAll,
+      systemNotifications: settings.systemNotifications !== false,
+      notifyOnWaiting: settings.notifyOnWaiting !== false,
       windowsDefaultShell: typeof settings.windowsDefaultShell === 'string' && settings.windowsDefaultShell
         ? settings.windowsDefaultShell
         : undefined,
@@ -155,6 +165,7 @@ export class AppSettingsStore {
       quickChatResumeGraceSec: normalizeResumeGraceSec(settings.quickChatResumeGraceSec),
       agentIntegrations: !!settings.agentIntegrations,
       agentTerminalControl: !!settings.agentTerminalControl,
+      agentLongRunningInPanes: !!settings.agentLongRunningInPanes,
       agentSqlControl: !!settings.agentSqlControl,
       agentSqlWrite: !!settings.agentSqlWrite,
       agentSftpControl: !!settings.agentSftpControl,

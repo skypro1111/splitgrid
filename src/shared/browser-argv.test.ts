@@ -42,4 +42,10 @@ describe('parseArgv', () => {
     expect(r.target).toBe('b1');
     expect(r.timeoutMs).toBe(2000);
   });
+
+  it('reads the agent-zone flags', () => {
+    const r = parseArgv(['open', '--zone', 'review', 'localhost:5173', '--split', 'down', '--at', 'c1']);
+    expect(r.positional).toEqual(['open', 'localhost:5173']);
+    expect([r.zone, r.split, r.at]).toEqual(['review', 'down', 'c1']);
+  });
 });

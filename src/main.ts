@@ -41,7 +41,10 @@ import { TEMP_DISABLE_INPUT_INTERCEPTS } from './shared/runtime-flags';
 import { latinKey } from './shared/keyboard';
 import { getQuickChatHotkey, getFocusModeHotkey, isCapturingQuickChatHotkey } from './main/quick-chat-hotkey-state';
 import { hotkeyMatchesInput } from './shared/quick-chat-hotkey';
+import { matchBrowserShortcut, isGuestReservedShortcut, BROWSER_GUEST_SHORTCUT_CHANNEL, type BrowserShortcutAction } from './shared/browser-shortcuts';
 import { getHistoryService } from './main/history/service';
+import { registerAgentNotifications } from './main/agent-notifications';
+import { setTerminalSkillLongRunningInPanes } from './main/agent-skills/terminal-skill';
 
 
 
@@ -323,6 +326,11 @@ const createWindow = (setId = DEFAULT_WORKSPACE_SET_ID) => {
     const key = latinKey(input);
     if ((input.meta || input.control) && (key === 'w' || key === 'r')) {
       event.preventDefault();
+      // The window never reloads, but a browser pane's address bar does: hand
+      // Cmd/Ctrl+R to the renderer as a host-addressed (-1) pane shortcut, and
+      // the pane whose address bar has focus reloads.
+      const action = key === 'r' ? matchBrowserShortcut(input, { platform: process.platform }) : null;
+      if (action && !win.webContents.isDestroyed()) win.webContents.send(BROWSER_GUEST_SHORTCUT_CHANNEL, -1, action);
     }
     if ((input.meta || input.control) && input.shift && key === 'n') {
       event.preventDefault();
@@ -453,6 +461,7 @@ app.on('ready', () => {
   // Claude Code pane steps land in <userData>/agent-panes.log so a hung or
   // crashed pane still leaves a trail to read (see the /agent bridge).
   configureAgentDiagnostics(app.getPath('userData'));
+  registerAgentNotifications();
   createWindow();
   startActivityReceiver();
   // If WSL distros are installed, add a receiver listener on the WSL vEthernet IP
@@ -492,6 +501,7 @@ app.on('ready', () => {
   // and the SPLITGRID_* terminal env) are a single opt-in: on launch we apply the
   // user's persisted choice and otherwise touch nothing. Default is off.
   const persistedSettings = new AppSettingsStore().get();
+  setTerminalSkillLongRunningInPanes(!!persistedSettings.agentLongRunningInPanes);
   initAgentIntegrations(
     persistedSettings.agentIntegrations ?? false,
     persistedSettings.agentTerminalControl ?? false,
@@ -602,6 +612,20 @@ function configureGuestPermissions(sess: Electron.Session): void {
   sess.setPermissionCheckHandler((_wc, permission) => GRANTED_GUEST_PERMISSIONS.has(permission));
 }
 
+// Hand a browser action for a webview guest to the GridBrowser that owns it (in
+// the embedder window); the pane matches on its guest's webContents id. With no
+// live host — shouldn't happen for a webview — plain reload still works.
+function sendGuestBrowserAction(contents: Electron.WebContents, action: BrowserShortcutAction): void {
+  if (contents.isDestroyed()) return;
+  const host = contents.hostWebContents;
+  if (host && !host.isDestroyed()) {
+    host.send(BROWSER_GUEST_SHORTCUT_CHANNEL, contents.id, action);
+    return;
+  }
+  if (action === 'reload') contents.reload();
+  else if (action === 'hard-reload') contents.reloadIgnoringCache();
+}
+
 app.on('web-contents-created', (_event, contents) => {
   if (contents.getType() !== 'webview') return;
   // Same guard as the app window: a target=_blank / window.open inside a browser
@@ -656,10 +680,13 @@ app.on('web-contents-created', (_event, contents) => {
       template.push({ type: 'separator' });
     }
 
+    const history = contents.navigationHistory;
     template.push(
-      { label: 'Back', enabled: contents.canGoBack(), click: () => contents.goBack() },
-      { label: 'Forward', enabled: contents.canGoForward(), click: () => contents.goForward() },
-      { label: 'Reload', click: () => contents.reload() },
+      { label: 'Back', enabled: history.canGoBack(), click: () => history.goBack() },
+      { label: 'Forward', enabled: history.canGoForward(), click: () => history.goForward() },
+      // Through the host pane, which retries a failed load's URL instead of
+      // reloading the blank error page (or the page before it).
+      { label: 'Reload', click: () => sendGuestBrowserAction(contents, 'reload') },
       { type: 'separator' },
       { label: 'Inspect Element', click: () => contents.inspectElement(params.x, params.y) },
       {
@@ -693,24 +720,24 @@ app.on('web-contents-created', (_event, contents) => {
       return;
     }
     if (TEMP_DISABLE_INPUT_INTERCEPTS) return;
+    // Chrome-style reload / hard reload / DevTools / focus-address chords. Taken
+    // here, before the page sees them: they must work on a failed load's blank
+    // error page (the guest preload can't be relied on there), and unhandled ⌘⇧R / ⌘⌥I would
+    // otherwise fall through to the app menu and reload the whole SplitGrid
+    // window / open the app's own DevTools. The owning GridBrowser runs them.
+    // Back/forward stay with the page first (see resources/webview-focus.js).
+    const browserAction = matchBrowserShortcut(input, { platform: process.platform });
+    if (browserAction && isGuestReservedShortcut(browserAction)) {
+      event.preventDefault();
+      sendGuestBrowserAction(contents, browserAction);
+      return;
+    }
     const key = latinKey(input);
-    const isReloadShortcut =
-      (input.meta || input.control) &&
-      !input.alt &&
-      !input.shift &&
-      key === 'r';
     const isCloseShortcut =
       (input.meta || input.control) &&
       !input.alt &&
       !input.shift &&
       key === 'w';
-    if (isReloadShortcut) {
-      event.preventDefault();
-      if (!contents.isDestroyed()) {
-        contents.reload();
-      }
-      return;
-    }
     if (isCloseShortcut) {
       event.preventDefault();
     }
