@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.3.1 — 2026-11-02
+
+### Added
+
+- **Collapse agent panes into the tray.** Every pane in an agent's zone has a
+  header button that moves it into the zone's tray strip, or back out among the
+  regular panes; the process and its scrollback keep running. Agents can do the
+  same with `sg-terminal background <id>` / `foreground <id>`, and are told to
+  close the panes a task needed once it is done.
+- **Notifications say what happened.** Done shows the agent's final reply,
+  Waiting shows the question it asks or the command it wants to run, as one
+  short line. The title leads with the workspace name. A question
+  (AskUserQuestion) now counts as Waiting too.
+
+### Fixed
+
+- **System notifications on macOS.** The packaged app carried a broken code
+  signature, so macOS silently dropped every notification. The app is now
+  properly ad-hoc signed. After updating, macOS may ask once to allow
+  notifications, and once to let SplitGrid read its saved credentials from the
+  keychain.
+
 ## 1.3.0 — 2026-11-02
 
 ### Added
