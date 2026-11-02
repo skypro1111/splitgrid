@@ -95,6 +95,7 @@ const App: React.FC = () => {
   useTerminalAgentBridge({
     workspaces: workspace.workspaces,
     openInZone: workspace.openInAgentZone,
+    moveZonePane: workspace.moveZonePaneInWorkspace,
     removeContainer: workspace.removeContainerAnywhere,
     createLocalTerminal: terminals.createLocalTerminal,
     connectSaved: terminals.connectSaved,

@@ -15,7 +15,8 @@ import type {
   SavedPrompt,
 } from '../../shared/types';
 import { firstLeafId, pruneLayoutTree, removeLeaf, replaceLeaf, swapLeaves } from '../../shared/layout-tree';
-import { openInZone, type ZoneSplit } from '../../shared/agent-zones';
+import { moveZonePane, openInZone, zoneOfPane, type ZoneSplit } from '../../shared/agent-zones';
+import { agentTerminalContainerId } from './agentZone';
 
 // Cap on the rolling "recently run" command feed (environment-scoped).
 const RECENT_COMMAND_LIMIT = 40;
@@ -182,7 +183,7 @@ export function useWorkspace() {
       setWorkspaces((prev) =>
         prev.map((ws) => {
           if (ws.id !== workspaceId) return ws;
-          const anchorId = ws.containers.find((c) => c.content.type === 'terminal' && c.content.terminalId === zone.terminal)?.id ?? ws.focusedContainerId;
+          const anchorId = agentTerminalContainerId(ws.containers, zone.terminal) ?? ws.focusedContainerId;
           const args = { ...zone, newId: id, anchorId, split: opts.split, background: opts.background };
           let placed = openInZone(ws.layoutTree, { ...args, at: opts.at });
           if (!placed.ok) placed = openInZone(ws.layoutTree, args);
@@ -197,6 +198,24 @@ export function useWorkspace() {
         }),
       );
       return id;
+    },
+    [],
+  );
+
+  // Collapse a zone pane into its zone's tray, or bring it back out (see
+  // shared/agent-zones). The bridges check the pane is in the caller's zone
+  // first; a pane that left its zone meanwhile is left alone.
+  const moveZonePaneInWorkspace = useCallback(
+    (workspaceId: string, containerId: string, toTray: boolean): void => {
+      setWorkspaces((prev) =>
+        prev.map((ws) => {
+          if (ws.id !== workspaceId) return ws;
+          const tag = zoneOfPane(ws.layoutTree, containerId);
+          if (!tag) return ws;
+          const tree = moveZonePane(ws.layoutTree, containerId, toTray, agentTerminalContainerId(ws.containers, tag.terminal));
+          return tree ? { ...ws, layoutTree: tree, updatedAt: Date.now() } : ws;
+        }),
+      );
     },
     [],
   );
@@ -761,6 +780,7 @@ export function useWorkspace() {
     splitContainer,
     createBrowserContainer,
     openInAgentZone,
+    moveZonePaneInWorkspace,
     updateContainerContent,
     removeContainer,
     updateLayoutTree,

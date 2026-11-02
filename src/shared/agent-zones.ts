@@ -1,5 +1,5 @@
 import type { AgentZoneTag, LayoutNode, LeafNode, SplitDirection, SplitNode } from './types';
-import { firstLeafId, leafIds, replaceLeaf } from './layout-tree';
+import { firstLeafId, leafIds, removeLeaf, replaceLeaf } from './layout-tree';
 
 // ─── Agent zones (pure) ──────────────────────────────────────────────────────
 // Each agent gets one region of the workspace for the panes it opens, so a
@@ -12,6 +12,10 @@ import { firstLeafId, leafIds, replaceLeaf } from './layout-tree';
 // Background processes (a dev server, a watcher) go to the zone's tray instead:
 // a thin strip along its bottom where they sit side by side, visible but out of
 // the way.
+//
+// Any zone pane can be moved between the two by hand or by its agent
+// (moveZonePane): collapsed into the tray to get it out of the way, or brought
+// back out when it needs room again.
 //
 // An agent is identified by its terminal plus a zone name. Subagents share the
 // parent's terminal and environment, so each passes its own `--zone <name>`;
@@ -203,4 +207,74 @@ export function openInZone(tree: LayoutNode | null, args: OpenInZoneArgs): OpenI
     : { type: 'split', direction: DIRECTION[args.split ?? 'right'], ratio: 0.5, first: { type: 'leaf', containerId: anchor }, second: zoned };
   // An agent running inside another agent's zone gets its zone nested there.
   return { ok: true, tree: replaceLeaf(tree, anchor, split), createdZone: true };
+}
+
+export type ZonePlace = 'main' | 'tray';
+
+/**
+ * Where each zone pane sits: among its zone's regular panes or in its tray.
+ * Panes outside every zone are left out. A zone nested inside another (an
+ * agent running in a terminal another agent opened) starts its own count.
+ */
+export function zonePlaces(tree: LayoutNode | null | undefined): Map<string, ZonePlace> {
+  const out = new Map<string, ZonePlace>();
+  const walk = (node: LayoutNode, inZone: boolean, inTray: boolean): void => {
+    if (node.zone) { inZone = true; inTray = false; }
+    if (node.zoneTray) inTray = true;
+    if (node.type === 'leaf') {
+      if (inZone) out.set(node.containerId, inTray ? 'tray' : 'main');
+      return;
+    }
+    walk(node.first, inZone, inTray);
+    walk(node.second, inZone, inTray);
+  };
+  if (tree) walk(tree, false, false);
+  return out;
+}
+
+/** The zone a pane belongs to: the innermost zone around it. */
+export function zoneOfPane(tree: LayoutNode | null | undefined, containerId: string): AgentZoneTag | null {
+  const walk = (node: LayoutNode, tag: AgentZoneTag | null): AgentZoneTag | null | undefined => {
+    const here = node.zone ?? tag;
+    if (node.type === 'leaf') return node.containerId === containerId ? here : undefined;
+    const found = walk(node.first, here);
+    return found !== undefined ? found : walk(node.second, here);
+  };
+  return (tree && walk(tree, null)) || null;
+}
+
+/**
+ * Move a zone pane into its zone's tray (`toTray`) or back out among the
+ * regular panes. It lands where a new pane of that kind would: after the
+ * tray's last pane, or after the zone's last regular pane. A zone left with
+ * nothing but its tray shrinks back to a strip under the agent's terminal
+ * (`anchorId`), as if it had only ever held background panes. Returns null when
+ * the pane is in no zone or is already there.
+ */
+export function moveZonePane(
+  tree: LayoutNode | null,
+  containerId: string,
+  toTray: boolean,
+  anchorId: string | null,
+): LayoutNode | null {
+  const tag = zoneOfPane(tree, containerId);
+  if (!tree || !tag) return null;
+  const owner = { terminal: tag.terminal, name: tag.name };
+  if (zoneLayout(tree, owner).tray.includes(containerId) === toTray) return null;
+
+  let next = removeLeaf(tree, containerId);
+  let moving = [containerId];
+  if (toTray) {
+    const left = zoneLayout(next, owner);
+    if (left.main.length === 0 && left.tray.length > 0) {
+      for (const id of left.tray) next = next && removeLeaf(next, id);
+      moving = [...left.tray, containerId];
+    }
+  }
+  for (const id of moving) {
+    const placed = openInZone(next, { ...owner, label: tag.label, newId: id, anchorId, background: toTray });
+    if (!placed.ok) return null;
+    next = placed.tree;
+  }
+  return next;
 }

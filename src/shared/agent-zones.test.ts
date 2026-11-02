@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LayoutNode } from './types';
-import { TRAY_RATIO, findZone, openInZone, parseZoneSplit, zoneLayout, zonePaneIds, type OpenInZoneArgs } from './agent-zones';
+import { TRAY_RATIO, findZone, moveZonePane, openInZone, parseZoneSplit, zoneLayout, zoneOfPane, zonePaneIds, zonePlaces, type OpenInZoneArgs } from './agent-zones';
 import { leafIds, pruneLayoutTree, removeLeaf, replaceLeaf } from './layout-tree';
 
 const leaf = (containerId: string): LayoutNode => ({ type: 'leaf', containerId });
@@ -147,6 +147,85 @@ describe('zone tray (background processes)', () => {
     expect(zoneLayout(tree, A)).toMatchObject({ main: [], tray: ['bg1'] });
     tree = open(tree, 'p2');
     expect(zoneLayout(tree, A)).toMatchObject({ main: ['p2'], tray: ['bg1'] });
+  });
+});
+
+describe('moveZonePane (collapse to / expand from the tray)', () => {
+  const move = (tree: LayoutNode, id: string, toTray: boolean): LayoutNode => {
+    const next = moveZonePane(tree, id, toTray, 'caller');
+    if (!next) throw new Error(`could not move ${id}`);
+    return next;
+  };
+
+  it('collapses a regular pane into the tray and expands it back after the last regular pane', () => {
+    let tree = open(leaf('caller'), 'p1');
+    tree = open(tree, 'p2');
+    tree = open(tree, 'bg1', { background: true });
+    tree = move(tree, 'p1', true);
+    expect(zoneLayout(tree, A)).toMatchObject({ main: ['p2'], tray: ['bg1', 'p1'] });
+    tree = move(tree, 'p1', false);
+    expect(zoneLayout(tree, A)).toMatchObject({ main: ['p2', 'p1'], tray: ['bg1'] });
+    expect(tree.type === 'split' && tree.first).toEqual(leaf('caller'));
+  });
+
+  it('starts a tray when the zone has none', () => {
+    let tree = open(leaf('caller'), 'p1');
+    tree = open(tree, 'p2');
+    tree = move(tree, 'p2', true);
+    expect(zoneLayout(tree, A)).toMatchObject({ main: ['p1'], tray: ['p2'] });
+    const zone = findZone(tree, A)!;
+    expect(zone.type === 'split' && [zone.direction, zone.ratio]).toEqual(['vertical', TRAY_RATIO]);
+  });
+
+  it('shrinks a zone left with only its tray to a strip under the agent\'s terminal', () => {
+    let tree = open(leaf('caller'), 'p1');
+    tree = open(tree, 'bg1', { background: true });
+    tree = move(tree, 'p1', true);
+    expect(zoneLayout(tree, A)).toMatchObject({ main: [], tray: ['bg1', 'p1'] });
+    expect(tree).toMatchObject({ type: 'split', direction: 'vertical', ratio: TRAY_RATIO, first: leaf('caller') });
+    expect(findZone(tree, A)?.zone).toEqual({ ...A, label: 'Agent A' });
+
+    // The only pane of a zone goes the same way.
+    const single = move(open(leaf('caller'), 'p1'), 'p1', true);
+    expect(single).toMatchObject({ type: 'split', direction: 'vertical', ratio: TRAY_RATIO, first: leaf('caller') });
+    expect(zoneLayout(single, A)).toMatchObject({ main: [], tray: ['p1'] });
+  });
+
+  it('grows a strip back to a full zone when a pane comes out of the tray', () => {
+    let tree = open(leaf('caller'), 'bg1', { background: true });
+    tree = open(tree, 'bg2', { background: true });
+    tree = move(tree, 'bg2', false);
+    expect(zoneLayout(tree, A)).toMatchObject({ main: ['bg2'], tray: ['bg1'] });
+    expect(tree).toMatchObject({ type: 'split', direction: 'vertical', ratio: 0.5, first: leaf('caller') });
+
+    // The last tray pane coming out: the zone becomes a regular pane beside the agent.
+    const solo = move(open(leaf('caller'), 'bg1', { background: true }), 'bg1', false);
+    expect(solo).toMatchObject({ type: 'split', direction: 'horizontal', first: leaf('caller') });
+    expect(zoneLayout(solo, A)).toMatchObject({ main: ['bg1'], tray: [] });
+  });
+
+  it('refuses panes outside every zone and panes already in place', () => {
+    const tree = open(open(leaf('caller'), 'p1'), 'bg1', { background: true });
+    expect(moveZonePane(tree, 'caller', true, 'caller')).toBeNull();
+    expect(moveZonePane(tree, 'p1', false, 'caller')).toBeNull();
+    expect(moveZonePane(tree, 'bg1', true, 'caller')).toBeNull();
+    expect(moveZonePane(tree, 'nope', true, 'caller')).toBeNull();
+  });
+
+  it('keeps a subagent\'s pane in its own zone', () => {
+    const R = { terminal: 'term-a', name: 'review' };
+    let tree = open(leaf('caller'), 'p1');
+    tree = open(tree, 'r1', { name: 'review' });
+    tree = open(tree, 'r2', { name: 'review' });
+    expect(zoneOfPane(tree, 'r1')).toMatchObject(R);
+    tree = move(tree, 'r1', true);
+    expect(zoneLayout(tree, R)).toMatchObject({ main: ['r2'], tray: ['r1'] });
+    expect(zoneLayout(tree, A)).toMatchObject({ main: ['p1'], tray: [] });
+  });
+
+  it('reports where every zone pane sits', () => {
+    const tree = open(open(open(leaf('caller'), 'p1'), 'p2'), 'bg1', { background: true });
+    expect(Object.fromEntries(zonePlaces(tree))).toEqual({ p1: 'main', p2: 'main', bg1: 'tray' });
   });
 });
 

@@ -48,6 +48,11 @@ function containerFor(ws: Workspace, paneId: string): Container | undefined {
   return ws.containers.find((c) => c.id === paneId || (c.content.type === 'terminal' && c.content.terminalId === paneId));
 }
 
+/** The container of the agent's own terminal: where its zone is anchored. */
+export function agentTerminalContainerId(containers: Container[], terminal: string): string | null {
+  return containers.find((c) => c.content.type === 'terminal' && c.content.terminalId === terminal)?.id ?? null;
+}
+
 export function zoneOwner(terminal: string, zone?: string): ZoneOwner {
   return { terminal, name: zone || DEFAULT_ZONE };
 }

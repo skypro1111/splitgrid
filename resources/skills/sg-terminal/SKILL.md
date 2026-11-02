@@ -33,9 +33,9 @@ this skill does not apply. Each call prints one JSON line: `{"ok":true, ...}` or
 - **Panes open in this agent's zone.** The first `open` splits this terminal
   and starts the zone. Every later pane, including browser and SQL panes from
   the sibling CLIs, goes inside it. See [Zones](#zones).
-- **A subagent passes `--zone <name>`** on `open`, `close`, `list` and `zone`,
-  using the same short name on every call (the task, like `review` or
-  `e2e-login`). Subagents share the parent's terminal, so without it they all
+- **A subagent passes `--zone <name>`** on `open`, `close`, `background`,
+  `foreground`, `list` and `zone`, using the same short name on every call
+  (the task, like `review` or `e2e-login`). Subagents share the parent's terminal, so without it they all
   land in the parent's zone. When delegating, tell the subagent its zone name.
 - **Submit to Claude Code (or another TUI agent) with `ctrl-m`, never Enter.**
   Its input box treats Enter as a newline, so `send` and `key enter` leave the
@@ -46,6 +46,11 @@ this skill does not apply. Each call prints one JSON line: `{"ok":true, ...}` or
 - **`close` works only on panes in this agent's zone.** It kills the session
   and removes the pane. Anything else (the user's panes, this terminal) is
   refused with `not_in_zone`; ask the user to close it.
+- **Clean up when the task is done.** Before finishing, `close` the panes
+  opened for it: a finished test run or build, a one-off shell. One that must
+  keep running (a dev server the user is using, an SSH session) goes to the
+  tray with `background <id>` instead of filling the layout. Leave a pane
+  open only when the user still needs to read or use it.
 - **Scope is this workspace.** An id from another workspace, or a closed
   terminal, is rejected with `out_of_scope`. Get ids from `list`.
 
@@ -141,8 +146,17 @@ alternating right and down unless told otherwise:
   user will read or interact with.
 - `--zone <name>` selects a zone other than the default `main`. Use the same
   name with `$SPLITGRID_BROWSER_CLI` and `$SPLITGRID_SQL_CLI` so their panes join it.
-- Close panes that are no longer needed. Leave the ones whose output the user
-  may want, such as a running dev server.
+
+Move a terminal of the zone between its regular panes and its tray at any time.
+The process keeps running and the scrollback stays:
+
+```sh
+"$SPLITGRID_TERMINAL_CLI" background <id>    # collapse into the tray
+"$SPLITGRID_TERMINAL_CLI" foreground <id>    # bring it back out as a regular pane
+# -> {"ok":true,"id":"…","background":true,"moved":true,"zone":"main"}
+```
+
+The user can do the same from the tray button in each zone pane's header.
 
 ## Patterns
 
@@ -160,6 +174,14 @@ Answer an interactive prompt in another shell:
 "$SPLITGRID_TERMINAL_CLI" send <id> "yes"
 ```
 
+Run the tests where the user can watch, then clear the pane:
+```sh
+id=$("$SPLITGRID_TERMINAL_CLI" open tests | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+"$SPLITGRID_TERMINAL_CLI" send "$id" "npm test"
+"$SPLITGRID_TERMINAL_CLI" read "$id" --tail 40     # until the summary line
+"$SPLITGRID_TERMINAL_CLI" close "$id"              # done: don't leave it hanging
+```
+
 Start a dev server and check the page:
 ```sh
 id=$("$SPLITGRID_TERMINAL_CLI" open dev --background | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
@@ -172,6 +194,6 @@ Give a long-running task its own pane, then clean up:
 ```sh
 id=$("$SPLITGRID_TERMINAL_CLI" open logs --background | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 "$SPLITGRID_TERMINAL_CLI" send "$id" "tail -f var/log/app.log"
-# … later …
+# … later, when it is no longer needed …
 "$SPLITGRID_TERMINAL_CLI" close "$id"
 ```

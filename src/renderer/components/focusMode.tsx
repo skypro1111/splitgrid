@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useSyncExternalStore } from 'react';
+import { PaneTrayButton } from './zoneTray';
 
 // --- Focus mode ---
 // Expands one container over the whole grid (visually overlaying the others)
@@ -67,45 +68,49 @@ const CompressGlyph: React.FC = () => (
 
 /**
  * The focus toggle, sized and coloured like the other header icon buttons.
- * Drop it right after a pane's close button.
+ * Drop it right after a pane's close button. A pane in an agent zone also gets
+ * the tray toggle beside it (see zoneTray), so every pane header carries both.
  */
 export const PaneFocusButton: React.FC<{ containerId: string }> = ({ containerId }) => {
   const focus = useFocusMode();
   const isFocused = focus.focusModeId === containerId;
 
   return (
-    <button
-      // The header starts a container drag on mousedown; this must not.
-      onMouseDown={(event) => event.stopPropagation()}
-      onClick={(event) => {
-        event.stopPropagation();
-        focus.toggle(containerId);
-      }}
-      title={isFocused ? 'Exit focus (⌘/Ctrl+Shift+F)' : 'Focus this container (⌘/Ctrl+Shift+F)'}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        width: 16,
-        height: 16,
-        padding: 0,
-        borderRadius: 4,
-        background: 'transparent',
-        border: 'none',
-        cursor: 'pointer',
-        flexShrink: 0,
-        color: isFocused ? 'var(--accent)' : 'var(--text-muted)',
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.background = 'var(--bg-hover)';
-        e.currentTarget.style.color = 'var(--text-primary)';
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.background = 'transparent';
-        e.currentTarget.style.color = isFocused ? 'var(--accent)' : 'var(--text-muted)';
-      }}
-    >
-      {isFocused ? <CompressGlyph /> : <ExpandGlyph />}
-    </button>
+    <>
+      <button
+        // The header starts a container drag on mousedown; this must not.
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation();
+          focus.toggle(containerId);
+        }}
+        title={isFocused ? 'Exit focus (⌘/Ctrl+Shift+F)' : 'Focus this container (⌘/Ctrl+Shift+F)'}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 16,
+          height: 16,
+          padding: 0,
+          borderRadius: 4,
+          background: 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+          flexShrink: 0,
+          color: isFocused ? 'var(--accent)' : 'var(--text-muted)',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = 'var(--bg-hover)';
+          e.currentTarget.style.color = 'var(--text-primary)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'transparent';
+          e.currentTarget.style.color = isFocused ? 'var(--accent)' : 'var(--text-muted)';
+        }}
+      >
+        {isFocused ? <CompressGlyph /> : <ExpandGlyph />}
+      </button>
+      <PaneTrayButton containerId={containerId} />
+    </>
   );
 };

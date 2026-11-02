@@ -17,7 +17,7 @@ import { inZone, resolveZoneRequest, takeZoneFlags, zoneOwner, zonePanes } from 
 // Panes it opens go into its zone (shared/agent-zones), and it may only close
 // the panes in that zone.
 
-interface BridgeDeps {
+export interface BridgeDeps {
   workspaces: Workspace[];
   // Create a filled container in the calling agent's zone of a workspace.
   openInZone: (
@@ -26,6 +26,8 @@ interface BridgeDeps {
     content: ContainerContent,
     opts?: { at?: string; split?: ZoneSplit; background?: boolean },
   ) => string;
+  // Collapse a zone pane into its zone's tray, or bring it back out.
+  moveZonePane: (workspaceId: string, containerId: string, toTray: boolean) => void;
   // Remove a container from whichever workspace holds it (closes the pane).
   removeContainer: (containerId: string) => void;
   // Spawn a local PTY / connect a saved SSH session (async; returns its info).
@@ -59,8 +61,10 @@ const HELP = {
     '                               thin tray along your zone\'s bottom, side by side',
     'zone                         — your zone\'s panes, in order',
     'connections                  — list saved SSH connections (name + host) for `open ssh`',
+    'background <id>              — collapse a terminal of your zone into its tray (keeps running)',
+    'foreground <id>              — bring a tray terminal of your zone back out as a regular pane',
     'close <id>                   — close a terminal in your zone (kills it + its pane)',
-    '--zone <name>                — on open/close/list/zone: use your own zone when you are a',
+    '--zone <name>                — on open/close/background/foreground/list/zone: use your own zone when you are a',
     '                               subagent (they share the parent\'s terminal); default: main',
   ],
   zones: 'The first pane you open splits your own terminal and starts your zone; every later pane is placed inside it. Panes outside your zone can be read and typed into, but not closed.',
@@ -122,7 +126,7 @@ export function useTerminalAgentBridge(deps: BridgeDeps): void {
       const { reqId, terminal, argv } = payload;
       let reply: Reply;
       try {
-        reply = await runCommand(depsRef.current, terminal, argv);
+        reply = await runTerminalAgentCommand(depsRef.current, terminal, argv);
       } catch (err) {
         reply = { ok: false, error: (err as Error).message || 'internal_error' };
       }
@@ -141,12 +145,13 @@ function terminalsOf(ws: Workspace): Array<{ id: string; container: Container }>
     .map((c) => ({ id: c.content.terminalId!, container: c }));
 }
 
-async function runCommand(deps: BridgeDeps, terminal: string, argv: string[]): Promise<Reply> {
+/** One agent command against the caller's workspace (exported for tests). */
+export async function runTerminalAgentCommand(deps: BridgeDeps, terminal: string, argv: string[]): Promise<Reply> {
   const { workspaces } = deps;
   const cmd = (argv[0] || '').toLowerCase();
   // Zone flags only on the commands that place or remove panes; `send`/`type`
   // text is passed through untouched.
-  const { flags, rest: rawRest } = ['open', 'close', 'list', 'zone'].includes(cmd)
+  const { flags, rest: rawRest } = ['open', 'close', 'background', 'foreground', 'list', 'zone'].includes(cmd)
     ? takeZoneFlags(argv.slice(1))
     : { flags: {}, rest: argv.slice(1) };
 
@@ -337,6 +342,22 @@ async function runCommand(deps: BridgeDeps, terminal: string, argv: string[]): P
       try { await deps.closeSession(targetId); } catch { /* may already be gone */ }
       if (container) deps.removeContainer(container.id);
       return { ok: true, data: { id: targetId, closed: true, mine: targetId === terminal } };
+    }
+    case 'background':
+    case 'foreground': {
+      // Collapse into / expand out of the tray: only the agent's own zone panes.
+      if (!inZone(callerWs, owner, targetId)) {
+        return {
+          ok: false,
+          error: 'not_in_zone',
+          data: { message: 'only panes in your zone can be moved to or from its tray', id: targetId, zone: owner.name, panes: zonePanes(callerWs, owner) },
+        };
+      }
+      const container = siblings.find((t) => t.id === targetId)!.container;
+      const toTray = cmd === 'background';
+      const wasInTray = zonePanes(callerWs, owner).some((p) => p.id === targetId && p.background);
+      if (wasInTray !== toTray) deps.moveZonePane(callerWs.id, container.id, toTray);
+      return { ok: true, data: { id: targetId, background: toTray, moved: wasInTray !== toTray, zone: owner.name } };
     }
     default:
       return { ok: false, error: 'unknown_command', data: { message: `unknown command: ${cmd}` } };

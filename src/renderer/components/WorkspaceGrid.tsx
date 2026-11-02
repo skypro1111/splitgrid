@@ -6,6 +6,9 @@ import { defaultFocusModeHotkey, hotkeyMatchesInput } from '../../shared/quick-c
 import { isCapturingHotkey } from '../hotkeyCapture';
 import { FocusModeContext, publishFocusMode, type GridRect } from './focusMode';
 import { leafIds, pruneLayoutTree } from '../../shared/layout-tree';
+import { moveZonePane, zoneOfPane, zonePlaces } from '../../shared/agent-zones';
+import { agentTerminalContainerId } from '../hooks/agentZone';
+import { publishZoneTray } from './zoneTray';
 
 const MIN_RATIO = 0.1;
 const HANDLE_SIZE = 6;
@@ -927,6 +930,23 @@ export const WorkspaceGrid: React.FC<WorkspaceGridProps> = ({
   useEffect(() => {
     publishFocusMode({ focusModeId, gridRect, toggle: toggleFocus });
   }, [focusModeId, gridRect, toggleFocus]);
+
+  // Same for the tray toggle of agent-zone panes (see zoneTray). Moving a pane
+  // only rewrites the tree; terminals and browsers are portalled, so they keep
+  // their session and scrollback, like after a drag.
+  const zonePlaceMap = useMemo(() => zonePlaces(tree), [tree]);
+  const toggleZoneTray = useCallback((containerId: string) => {
+    const current = treeRef.current;
+    const place = zonePlaces(current).get(containerId);
+    const tag = zoneOfPane(current, containerId);
+    if (!place || !tag) return;
+    const anchorId = agentTerminalContainerId(containersRef.current, tag.terminal);
+    const next = moveZonePane(current, containerId, place === 'main', anchorId);
+    if (next) handleNodeChangeAndCommit(next);
+  }, [handleNodeChangeAndCommit]);
+  useEffect(() => {
+    publishZoneTray({ places: zonePlaceMap, toggle: toggleZoneTray });
+  }, [zonePlaceMap, toggleZoneTray]);
 
   // Render-time safety net: a leaf whose container is gone draws nothing yet
   // still holds its slice of the grid, so a tree made only of such leaves would
