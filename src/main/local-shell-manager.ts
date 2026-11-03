@@ -5,6 +5,7 @@ import { decodeWslOutput } from './wsl-encoding';
 import { parseWslScan, aggregateWslTerminal, type WslRow } from './wsl-metrics';
 import { existsSync } from 'node:fs';
 import { crashLog } from './crash-log';
+import { changedCwds, pickSpawnCwd, readShellCwds } from './shell-cwd';
 import { execFile, spawn } from 'node:child_process';
 import { RECEIVER_PORT } from './agent-activity-receiver';
 import { BROWSER_TOKEN } from './agent-browser-bridge';
@@ -194,6 +195,8 @@ interface ShellCallbacks {
   onReady: (sessionId: string) => void;
   onClose: (sessionId: string, info?: { exitedCleanly: boolean }) => void;
   onError: (sessionId: string, message: string) => void;
+  /** The shell `cd`'d: its live working directory changed (macOS/Linux only). */
+  onCwd?: (sessionId: string, cwd: string) => void;
 }
 
 interface ProcessRow {
@@ -978,6 +981,9 @@ async function collectProcessTree(rootPid: number): Promise<TerminalProcessInfo[
 }
 
 const METRICS_CACHE_MS = 1000;
+// How often the shells' live cwd is re-read. It bounds what a killed app can
+// lose (a `cd` in the last few seconds), and costs one `lsof` per tick on macOS.
+const CWD_POLL_MS = 3000;
 
 interface SessionMetrics {
   processMetrics: { supported: boolean; metrics: Map<number, ProcessTreeMetric> };
@@ -999,6 +1005,10 @@ export class LocalShellManager {
   // its result briefly so N windows cost one scan, and slow scans can't pile up.
   private metricsInFlight: Promise<SessionMetrics> | null = null;
   private metricsCache: { at: number; value: SessionMetrics } | null = null;
+  // Live-cwd tracking: one timer for all sessions, started with the first shell
+  // and stopped once none are left; one scan in flight at a time.
+  private cwdTimer: ReturnType<typeof setInterval> | null = null;
+  private cwdScan: Promise<void> | null = null;
 
   setCallbacks(callbacks: ShellCallbacks): void {
     this.callbacks = callbacks;
@@ -1035,7 +1045,12 @@ export class LocalShellManager {
       : process.env.SHELL || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
 
     const shell = config?.shell || defaultShell;
-    const cwd = config?.cwd || homedir;
+    // A restored pane may point at a folder removed since — fall back to the
+    // workspace folder, then home, rather than fail the spawn. Windows keeps its
+    // old behaviour: a WSL target's cwd isn't a path this process can stat.
+    const cwd = isWindows
+      ? config?.cwd || homedir
+      : pickSpawnCwd([config?.cwd, config?.fallbackCwd], homedir, existsSync);
     const label = config?.label || 'Local';
 
     // A WSL target encodes its distro in `shell` as `wsl:<distro>`. We spawn the
@@ -1240,6 +1255,7 @@ export class LocalShellManager {
       };
 
       this.sessions.set(id, session);
+      this.ensureCwdTracking();
 
       session.onDataDispose = ptyProcess.onData((data: string) => {
         if (session.closing) return;
@@ -1372,8 +1388,73 @@ export class LocalShellManager {
 
   shutdownForAppExit(): void {
     this.isShuttingDown = true;
+    this.stopCwdTracking();
     this.closeAll();
     this.callbacks = null;
+  }
+
+  // ─── Live cwd ──────────────────────────────────────────────────────────────
+
+  private ensureCwdTracking(): void {
+    if (this.cwdTimer || this.isShuttingDown || process.platform === 'win32') return;
+    this.cwdTimer = setInterval(() => {
+      if (this.sessions.size === 0) {
+        this.stopCwdTracking();
+        return;
+      }
+      void this.scanCwdsOnce().catch(() => {});
+    }, CWD_POLL_MS);
+    // Never the reason the process stays alive.
+    this.cwdTimer.unref?.();
+  }
+
+  private stopCwdTracking(): void {
+    if (this.cwdTimer) clearInterval(this.cwdTimer);
+    this.cwdTimer = null;
+  }
+
+  private scanCwdsOnce(): Promise<void> {
+    if (!this.cwdScan) {
+      this.cwdScan = this.scanCwds().finally(() => {
+        this.cwdScan = null;
+      });
+    }
+    return this.cwdScan;
+  }
+
+  private async scanCwds(): Promise<void> {
+    if (process.platform === 'win32') return;
+    const live = Array.from(this.sessions.values()).filter((s) => !s.closing);
+    if (live.length === 0) return;
+    const byPid = await readShellCwds(live.map((s) => s.pty.pid));
+    const changes = changedCwds(
+      live.map((s) => ({ id: s.info.id, pid: s.pty.pid, cwd: s.info.cwd })),
+      byPid,
+    );
+    for (const { id, cwd } of changes) {
+      const session = this.sessions.get(id);
+      // Closed or replaced while lsof ran — nothing to report.
+      if (!session || session.closing) continue;
+      session.info.cwd = cwd;
+      if (!this.isShuttingDown) this.safeNotify(() => this.callbacks?.onCwd?.(id, cwd));
+    }
+  }
+
+  /**
+   * Re-read now and return the live cwd of each requested session. Used before
+   * a workspace is closed, so a `cd` made since the last tick is not lost.
+   */
+  async refreshCwds(ids: string[]): Promise<Record<string, string>> {
+    // A tick already running may have read before the latest `cd`: let it
+    // finish, then scan again.
+    await this.cwdScan?.catch(() => {});
+    await this.scanCwdsOnce();
+    const out: Record<string, string> = {};
+    for (const id of ids) {
+      const cwd = this.sessions.get(id)?.info.cwd;
+      if (cwd) out[id] = cwd;
+    }
+    return out;
   }
 
   getBuffer(id: string): string {

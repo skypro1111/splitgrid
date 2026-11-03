@@ -17,6 +17,7 @@ import type {
 import { firstLeafId, pruneLayoutTree, removeLeaf, replaceLeaf, swapLeaves } from '../../shared/layout-tree';
 import { moveZonePane, openInZone, zoneOfPane, type ZoneSplit } from '../../shared/agent-zones';
 import { agentTerminalContainerId } from './agentZone';
+import { applyTerminalCwd } from './terminalCwd';
 
 // Cap on the rolling "recently run" command feed (environment-scoped).
 const RECENT_COMMAND_LIMIT = 40;
@@ -238,6 +239,11 @@ export function useWorkspace() {
     },
     []
   );
+
+  // A local terminal `cd`'d: keep its pane's saved cwd current (see terminalCwd).
+  const setTerminalCwd = useCallback((terminalId: string, cwd: string) => {
+    setWorkspaces((prev) => applyTerminalCwd(prev, terminalId, cwd));
+  }, []);
 
   // Remove container
   const removeContainer = useCallback(
@@ -782,6 +788,7 @@ export function useWorkspace() {
     openInAgentZone,
     moveZonePaneInWorkspace,
     updateContainerContent,
+    setTerminalCwd,
     removeContainer,
     updateLayoutTree,
     removeContainerAnywhere,

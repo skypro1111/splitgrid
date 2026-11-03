@@ -128,6 +128,8 @@ export interface TerminalSessionInfo {
 
 export interface LocalShellConfig {
   cwd?: string;
+  /** Used when `cwd` no longer exists (e.g. a restored pane's folder was removed). */
+  fallbackCwd?: string;
   shell?: string;
   label?: string;
 }
@@ -1091,6 +1093,10 @@ export interface ElectronAPI {
   onData(callback: (sessionId: string, data: string) => void): () => void;
   onSessionReady(callback: (sessionId: string) => void): () => void;
   onSessionClosed(callback: (sessionId: string, exitedCleanly: boolean) => void): () => void;
+  /** A local terminal's shell changed directory (macOS/Linux). */
+  onSessionCwd(callback: (sessionId: string, cwd: string) => void): () => void;
+  /** Re-read the live cwd of these local terminals now; absent ids have none. */
+  refreshSessionCwds(sessionIds: string[]): Promise<Record<string, string>>;
   onError(callback: (sessionId: string, message: string) => void): () => void;
 
   getSavedConnections(): Promise<SavedConnection[]>;

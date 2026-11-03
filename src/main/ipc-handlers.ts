@@ -449,6 +449,9 @@ export function registerIPCHandlers(
     onError: (sessionId, message) => {
       sendToSessionOwner(sessionId, 'terminal:on-error', sessionId, message);
     },
+    onCwd: (sessionId, cwd) => {
+      sendToSessionOwner(sessionId, 'terminal:on-cwd', sessionId, cwd);
+    },
     onPasswordPrompt: (sessionId, label, source) => {
       // Carries NO password — just a signal for the renderer to offer it.
       sendToSessionOwner(sessionId, 'ssh:password-prompt', { sessionId, label, source });
@@ -516,6 +519,16 @@ export function registerIPCHandlers(
       }
     }
   );
+
+  // Live cwd of the caller's own local terminals, read now — the renderer asks
+  // right before closing a workspace so its snapshot has the latest `cd`.
+  ipcMain.handle('terminal:refresh-cwds', async (event, sessionIds: unknown) => {
+    if (!Array.isArray(sessionIds)) return {};
+    const owned = sessionIds.filter(
+      (id): id is string => typeof id === 'string' && sessionOwner.get(id) === event.sender.id,
+    );
+    return owned.length > 0 ? terminalManager.refreshCwds(owned) : {};
+  });
 
   // --- Window controls (frameless platforms: the renderer's WorkspaceBar draws
   // min/max/close and drives the sender's own window through these) ---

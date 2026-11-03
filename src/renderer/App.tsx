@@ -2,6 +2,7 @@ import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { PaneFocusButton } from './components/focusMode';
 import { useTerminals } from './hooks/useTerminals';
 import { useWorkspace } from './hooks/useWorkspace';
+import { withTerminalCwds } from './hooks/terminalCwd';
 import { useClaudeActivity } from './hooks/useClaudeActivity';
 import { useAgentNotify } from './hooks/useAgentNotify';
 import { useWorkspaceActivity } from './hooks/useWorkspaceActivity';
@@ -457,6 +458,12 @@ const App: React.FC = () => {
   workspacesRef.current = workspace.workspaces;
   const handleReconnectRef = useRef<((id: string) => Promise<void>) | null>(null);
   const autoReconnectInFlightRef = useRef<Set<string>>(new Set());
+  // Each local shell's live cwd, pushed by main when it `cd`s, goes into its
+  // pane's saved cwd — so the terminal reopens there after the workspace is
+  // closed, the app quits, or the app is killed (it is on disk within a second).
+  const { setTerminalCwd } = workspace;
+  useEffect(() => window.electronAPI.onSessionCwd(setTerminalCwd), [setTerminalCwd]);
+
   const autoReconnectAtRef = useRef<Map<string, number>>(new Map());
   useEffect(() => {
     return window.electronAPI.onSessionClosed((sessionId, exitedCleanly) => {
@@ -933,6 +940,9 @@ const App: React.FC = () => {
           const cwd = container.content.cwd ?? active.workingDirectory ?? undefined;
           const info = await terminals.createLocalTerminal({
             cwd,
+            // The saved cwd tracks the shell's last `cd` and may name a folder
+            // removed since; main then starts in the workspace folder instead.
+            fallbackCwd: active.workingDirectory ?? undefined,
             shell: container.content.shell,
             label: container.content.label,
           });
@@ -942,7 +952,8 @@ const App: React.FC = () => {
             terminalType: 'local',
             terminalId: info.id,
             label: container.content.label ?? info.label,
-            cwd: cwd ?? info.cwd,
+            // The folder main actually started in (after any fallback).
+            cwd: info.cwd ?? cwd,
             shell: container.content.shell ?? info.shell,
           });
         } catch (error) {
@@ -1351,8 +1362,17 @@ const App: React.FC = () => {
   // reopened) before removing it. Strip volatile terminal output like the save
   // path does, and clear frozen (its processes are gone).
   const handleCloseWorkspace = useCallback(async (id: string) => {
-    const ws = workspace.workspaces.find((w) => w.id === id);
-    if (ws) {
+    const found = workspace.workspaces.find((w) => w.id === id);
+    if (found) {
+      // The pane cwds follow each shell's `cd` on a few-second poll; read them
+      // once more now so a `cd` made just before closing is not lost.
+      const localIds = found.containers
+        .map((c) => (c.content.type === 'terminal' && c.content.terminalType !== 'ssh' ? c.content.terminalId : undefined))
+        .filter((x): x is string => !!x);
+      const freshCwds = localIds.length > 0
+        ? await window.electronAPI.refreshSessionCwds(localIds).catch(() => ({} as Record<string, string>))
+        : {};
+      const ws = withTerminalCwds(found, freshCwds);
       const snapshot = {
         ...ws,
         frozen: false,

@@ -18,6 +18,8 @@ interface TerminalCallbacks {
   // whether to close the terminal's container.
   onClose: (sessionId: string, info?: { exitedCleanly: boolean }) => void;
   onError: (sessionId: string, message: string) => void;
+  // Local only: the shell's live working directory changed.
+  onCwd?: (sessionId: string, cwd: string) => void;
   // SSH only: a password/sudo prompt was detected on an opted-in connection.
   onPasswordPrompt?: (sessionId: string, label: string, source: 'sudo' | 'login') => void;
 }
@@ -83,6 +85,11 @@ export class TerminalManager {
       this.localManager.closeShell(id);
     }
     this.typeMap.delete(id);
+  }
+
+  /** Live cwd of the given LOCAL sessions, read now (SSH ids are skipped). */
+  refreshCwds(ids: string[]): Promise<Record<string, string>> {
+    return this.localManager.refreshCwds(ids.filter((id) => this.typeMap.get(id) === 'local'));
   }
 
   closeAll(): void {

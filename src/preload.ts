@@ -33,6 +33,12 @@ const api: ElectronAPI = {
     ipcRenderer.on('terminal:on-close', handler);
     return () => ipcRenderer.removeListener('terminal:on-close', handler);
   },
+  onSessionCwd: (callback) => {
+    const handler = (_e: Electron.IpcRendererEvent, id: string, cwd: string) => callback(id, cwd);
+    ipcRenderer.on('terminal:on-cwd', handler);
+    return () => ipcRenderer.removeListener('terminal:on-cwd', handler);
+  },
+  refreshSessionCwds: (sessionIds) => ipcRenderer.invoke('terminal:refresh-cwds', sessionIds),
   onError: (callback) => {
     const handler = (_e: Electron.IpcRendererEvent, id: string, msg: string) => callback(id, msg);
     ipcRenderer.on('terminal:on-error', handler);
