@@ -8,6 +8,14 @@
 /** The few fields we read from Claude Code / Codex hook input. */
 export interface HookPayload {
   hook_event_name?: string;
+  /** The agent session the hook fired in (a nested `claude -p` has its own). */
+  session_id?: string;
+  /** Set when the hook fired inside a subagent or teammate, not the main thread. */
+  agent_id?: string;
+  /** SessionStart: startup | resume | clear | compact | fork. */
+  source?: string;
+  /** Stop: work still in flight that will wake the session (types like shell, subagent). */
+  background_tasks?: Array<{ type?: string }>;
   /** Stop / SubagentStop: the text of the final reply. */
   last_assistant_message?: string;
   /** Notification: e.g. "Claude needs your permission to use Bash". */
@@ -26,8 +34,15 @@ export function parseHookPayload(raw: unknown): HookPayload | null {
   const input = o.tool_input && typeof o.tool_input === 'object' && !Array.isArray(o.tool_input)
     ? (o.tool_input as Record<string, unknown>)
     : undefined;
+  const tasks = Array.isArray(o.background_tasks)
+    ? o.background_tasks.map((t) => ({ type: str((t as Record<string, unknown> | null)?.type) }))
+    : undefined;
   return {
     hook_event_name: str(o.hook_event_name),
+    session_id: str(o.session_id),
+    agent_id: str(o.agent_id),
+    source: str(o.source),
+    background_tasks: tasks,
     last_assistant_message: str(o.last_assistant_message),
     message: str(o.message),
     notification_type: str(o.notification_type),

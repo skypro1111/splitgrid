@@ -111,4 +111,34 @@ describe('useTerminalViewState', () => {
     activity = new Map([['sa', 'working'], ['sb', 'waiting']]); tick();
     expect(onNewWaiting).toHaveBeenCalledTimes(2);
   });
+  it('shows nothing for an agent at its prompt, and its output never stands in for hooks', () => {
+    const onNewUnviewed = vi.fn();
+    let activity = new Map<string, ClaudeActivityState>([['sb', 'ready']]);
+    let output: Map<string, 'working' | 'stopped'> = new Map([['sb', 'working']]);
+    const { result, rerender } = renderHook(() => useTerminalViewState({
+      workspaces: WORKSPACES,
+      activeWorkspaceId: 'A',
+      claudeActivity: activity,
+      sessionActivity: output,
+      notifyAt: new Map([['sb', Date.now() + 10_000]]),
+      getProcCommand: () => 'claude',
+      onNewUnviewed,
+    }));
+    const tick = () => {
+      act(() => rerender());
+      act(() => {
+        vi.advanceTimersByTime(1000);
+        window.dispatchEvent(new Event('focus'));
+      });
+    };
+    tick();
+    // A freshly started (or interrupted) agent redraws its screen: no status, no Done.
+    output = new Map([['sb', 'stopped']]); tick();
+    expect(result.current.kinds.has('sb')).toBe(false);
+    expect(onNewUnviewed).not.toHaveBeenCalled();
+    // A real turn still ends in Done.
+    activity = new Map([['sb', 'working']]); tick();
+    activity = new Map([['sb', 'idle']]); tick();
+    expect(onNewUnviewed).toHaveBeenCalledTimes(1);
+  });
 });

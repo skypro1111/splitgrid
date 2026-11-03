@@ -990,7 +990,13 @@ export interface EnvironmentSummary {
   isOpen?: boolean;
 }
 
-export type ClaudeActivityState = 'working' | 'idle' | 'waiting';
+/**
+ * An agent terminal's turn state, from its lifecycle hooks. 'idle' = a turn
+ * finished (Done). 'ready' = the agent sits at its prompt with nothing to
+ * announce: just started, interrupted, its session ended. It shows no status,
+ * but tells the renderer that hooks drive this agent.
+ */
+export type ClaudeActivityState = 'working' | 'idle' | 'waiting' | 'ready';
 
 // --- Web streaming auth (WorkOS) ---
 

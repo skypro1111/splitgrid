@@ -7,7 +7,7 @@
 // config is harmless for agent runs launched outside splitgrid.
 
 /** Event names our /hook endpoint understands (see agent-activity-receiver). */
-export type SplitGridHookEvent = 'prompt-submit' | 'stop' | 'notification' | 'tool';
+export type SplitGridHookEvent = 'prompt-submit' | 'stop' | 'notification' | 'tool' | 'session-start' | 'session-end';
 
 export interface AgentEventMap {
   /** The agent's own hook event name (key in its config). */
@@ -40,6 +40,10 @@ export interface AgentHookDef {
 // (matcher '*' = all tools); we map them to a 'working' heartbeat so a long,
 // tool-heavy turn keeps refreshing activity instead of being mistaken for idle
 // by the safety sweep (Stop only fires at the very end of the turn).
+// SessionStart/SessionEnd bracket the session, so a freshly started agent is
+// known to be hooked before its first prompt. StopFailure ends a turn that an
+// API error cut short, which fires no Stop. (Esc fires neither; the
+// idle_prompt Notification catches that, see agent-activity-machine.)
 export const CLAUDE: AgentHookDef = {
   id: 'claude',
   label: 'Claude Code',
@@ -53,7 +57,10 @@ export const CLAUDE: AgentHookDef = {
     { agentEvent: 'PreToolUse', splitgridEvent: 'tool', matcher: true },
     { agentEvent: 'PostToolUse', splitgridEvent: 'tool', matcher: true },
     { agentEvent: 'Stop', splitgridEvent: 'stop' },
+    { agentEvent: 'StopFailure', splitgridEvent: 'stop' },
     { agentEvent: 'Notification', splitgridEvent: 'notification' },
+    { agentEvent: 'SessionStart', splitgridEvent: 'session-start' },
+    { agentEvent: 'SessionEnd', splitgridEvent: 'session-end' },
   ],
 };
 

@@ -7,7 +7,9 @@ import { handleSftpRequest } from './agent-sftp-bridge';
 import { handleHistoryRequest } from './agent-history-bridge';
 import { handleAgentPaneRequest } from './agent-pane-bridge';
 import { startExtensionChannel, stopExtensionChannel } from './agent-browser-channel';
-import { doneDetail, parseHookPayload, waitingDetail, type PendingTool } from './agent-hook-detail';
+import { parseHookPayload } from './agent-hook-detail';
+import { applyHookEvent, hookEventName, sweep, type Step, type TermActivity } from './agent-activity-machine';
+import type { ClaudeActivityState } from '../shared/types';
 
 // ─── Agent activity receiver ─────────────────────────────────────────────────
 // Agents launched inside a splitgrid terminal report their turn lifecycle by
@@ -17,21 +19,13 @@ import { doneDetail, parseHookPayload, waitingDetail, type PendingTool } from '.
 // (agent-hook-detail): the final reply on Stop, the question or the tool call
 // awaiting permission while waiting. Hooks are installed into
 // each agent's global config by agent-hooks/installer. We map the event to a
-// three-state activity and broadcast it to the renderer:
-//   prompt-submit / start    -> 'working'  (turn started)
-//   stop / done              -> 'idle'     (turn finished)
-//   notification (mid-turn)  -> 'waiting'  (needs permission / input)
+// turn state (agent-activity-machine) and broadcast it to the renderer:
+//   prompt-submit / tool calls   -> 'working'
+//   stop (nothing left to wake)  -> 'idle'     (Done)
+//   permission prompt / question -> 'waiting'
+//   session start/end, interrupt -> 'ready'    (at its prompt, nothing to announce)
 
 export const RECEIVER_PORT = 19558;
-
-export type ClaudeActivityState = 'working' | 'idle' | 'waiting';
-
-// Flip a stuck 'working' terminal to idle if we somehow miss its stop event
-// (crashed agent / no Stop hook). With Pre/PostToolUse heartbeats refreshing
-// activity on every tool call, this is now a pure crashed-agent backstop, so it
-// can be generous: it only trips during a single tool / thinking gap longer than
-// this with no Stop — far better than falsely flipping to Done mid-turn.
-const SAFETY_IDLE_MS = 600_000;
 
 // Largest request body we buffer. Agent commands are argv + paths (never file
 // contents), so this is generous; without a cap any local process — or a web
@@ -47,14 +41,7 @@ let sweepTimer: ReturnType<typeof setInterval> | null = null;
 // listener on the WSL vEthernet IP (see addReceiverInterface), never via 0.0.0.0.
 const bindHost = '127.0.0.1';
 
-interface TermState {
-  state: ClaudeActivityState;
-  lastEventAt: number;
-}
-const stateByTerminal = new Map<string, TermState>();
-// The last tool call each terminal's agent announced (PreToolUse) that hasn't
-// finished: what a permission prompt, which doesn't name it, is about.
-const pendingToolByTerminal = new Map<string, PendingTool>();
+const activityByTerminal = new Map<string, TermActivity>();
 
 function broadcast(terminalId: string, state: ClaudeActivityState, detail?: string): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -63,67 +50,26 @@ function broadcast(terminalId: string, state: ClaudeActivityState, detail?: stri
   }
 }
 
-function setState(terminalId: string, state: ClaudeActivityState, detail?: string): void {
-  const prev = stateByTerminal.get(terminalId);
-  stateByTerminal.set(terminalId, { state, lastEventAt: Date.now() });
-  if (prev?.state !== state) {
-    console.log(`[activity] term=${terminalId.slice(0, 8)} -> ${state}`);
-    broadcast(terminalId, state, detail);
+function commit(terminalId: string, step: Step | null): void {
+  if (!step) return;
+  activityByTerminal.set(terminalId, step.next);
+  if (step.emit) {
+    console.log(`[activity] term=${terminalId.slice(0, 8)} -> ${step.emit.state}`);
+    broadcast(terminalId, step.emit.state, step.emit.detail);
   }
 }
 
-// Lifecycle event names the helper may send, mapped to activity state. 'tool'
-// (Pre/PostToolUse) is a 'working' heartbeat — it keeps a long turn marked active
-// between prompt-submit and the final stop.
-const HOOK_EVENT_STATE: Record<string, ClaudeActivityState> = {
-  prompt: 'working', 'prompt-submit': 'working', 'user-prompt': 'working',
-  start: 'working', active: 'working', tool: 'working',
-  stop: 'idle', idle: 'idle', done: 'idle', end: 'idle',
-  notification: 'waiting', notify: 'waiting', 'needs-input': 'waiting',
-  waiting: 'waiting', permission: 'waiting',
-};
-
 /** `rawPayload` is the agent's hook input (parsed JSON), when the helper sent it. */
 export function handleHookEvent(terminal: string, event: string, rawPayload?: unknown): void {
-  const ev = event.trim().toLowerCase();
-  let state = HOOK_EVENT_STATE[ev];
-  if (!terminal || !state) return;
+  const name = hookEventName(event);
+  if (!terminal || !name) return;
   // /hook carries no token (fire-and-forget by design), so only accept ids this
   // run actually created — otherwise junk ids would grow the map without bound.
   if (!isKnownTerminal(terminal)) return;
-  const payload = parseHookPayload(rawPayload);
-
-  if (ev === 'tool' && payload?.tool_name) {
-    if (payload.hook_event_name === 'PreToolUse') {
-      pendingToolByTerminal.set(terminal, { tool_name: payload.tool_name, tool_input: payload.tool_input });
-      // A question to the user arrives as a tool call, but the agent now waits on them.
-      if (payload.tool_name === 'AskUserQuestion') state = 'waiting';
-    } else if (payload.hook_event_name === 'PostToolUse') {
-      pendingToolByTerminal.delete(terminal);
-    }
-  }
-
-  // "waiting" only counts mid-turn — a permission/question while working. The
-  // SAME notification fires when the agent sits idle after a turn ("waiting for
-  // your input"); that must NOT override the finished state, or the terminal
-  // sticks on Waiting once output ends.
-  if (state === 'waiting' && stateByTerminal.get(terminal)?.state !== 'working') return;
-
-  let detail: string | undefined;
-  if (state === 'waiting') {
-    detail = waitingDetail(payload, pendingToolByTerminal.get(terminal));
-  } else if (state === 'idle') {
-    pendingToolByTerminal.delete(terminal);
-    detail = doneDetail(payload);
-  } else if (ev !== 'tool') {
-    pendingToolByTerminal.delete(terminal);
-  }
-  // Tool heartbeats fire on every tool call; only log when they actually change
-  // state (setState logs transitions) to avoid flooding the console.
-  if (ev !== 'tool') {
-    console.log(`[hook] term=${terminal.slice(0, 8)} event=${event} -> ${state}`);
-  }
-  setState(terminal, state, detail);
+  const step = applyHookEvent(activityByTerminal.get(terminal), name, parseHookPayload(rawPayload), Date.now());
+  // Tool heartbeats fire on every tool call; transitions are logged in commit.
+  if (name !== 'tool' && step?.emit) console.log(`[hook] term=${terminal.slice(0, 8)} event=${event}`);
+  commit(terminal, step);
 }
 
 // Where the helper put the terminal and event: the query string (current
@@ -160,7 +106,7 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
 
 export function getClaudeActivityStates(): Record<string, ClaudeActivityState> {
   const out: Record<string, ClaudeActivityState> = {};
-  for (const [id, s] of stateByTerminal) out[id] = s.state;
+  for (const [id, s] of activityByTerminal) out[id] = s.state;
   return out;
 }
 
@@ -250,20 +196,17 @@ export function startActivityReceiver(): void {
   // a WebSocket on EXT_WS_PATH (extension origins + a pairing token only).
   startExtensionChannel(server);
 
-  // Safety sweep: clear a working terminal gone silent far longer than any real
-  // turn (missed stop event / crashed agent).
+  // Safety sweep: a working turn gone silent with no tool running (see
+  // agent-activity-machine.sweep) goes back to 'ready' — never to Done.
   sweepTimer = setInterval(() => {
     const now = Date.now();
-    for (const [id, s] of stateByTerminal) {
+    for (const [id, s] of activityByTerminal) {
       // A closed terminal leaves the owner map; forget its activity too.
       if (!isKnownTerminal(id)) {
-        stateByTerminal.delete(id);
-        pendingToolByTerminal.delete(id);
+        activityByTerminal.delete(id);
         continue;
       }
-      if (s.state !== 'idle' && now - s.lastEventAt > SAFETY_IDLE_MS) {
-        setState(id, 'idle');
-      }
+      commit(id, sweep(s, now));
     }
   }, 30_000);
 }
@@ -293,6 +236,5 @@ export function stopActivityReceiver(): void {
     clearInterval(sweepTimer);
     sweepTimer = null;
   }
-  stateByTerminal.clear();
-  pendingToolByTerminal.clear();
+  activityByTerminal.clear();
 }

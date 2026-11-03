@@ -118,6 +118,9 @@ export function useTerminalViewState(inputs: Inputs): TerminalViewState {
     if (cs === 'working') return 'working';
     if (cs === 'waiting') return 'waiting';
     if (cs === 'idle') return 'done'; // an 'idle' entry only exists post-turn
+    // At its prompt with nothing to announce (started, interrupted, session
+    // ended). Hooks drive it, so output never stands in for its state.
+    if (cs === 'ready') return null;
     // No hook state for this agent: either a hookless agent (cursor, opencode) or a WSL
     // claude whose hooks live in the distro's Linux ~/.claude, not the Windows one
     // splitgrid installs into. Fall through to output content-diff so it still shows
